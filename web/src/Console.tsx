@@ -130,9 +130,16 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
         loadDetail(selectedRef.current).catch(() => undefined);
       }
     };
-    const onConversation = (payload: { customerId: string }) => {
+    const onConversation = (payload: { customerId: string; ended?: boolean }) => {
       refreshLists().catch(() => undefined);
-      if (selectedRef.current === payload.customerId) loadDetail(payload.customerId).catch(() => undefined);
+      if (selectedRef.current === payload.customerId) {
+        if (payload.ended) {
+          setSelectedId(null); // another staff ended this chat — close it here too
+          setDetail(null);
+        } else {
+          loadDetail(payload.customerId).catch(() => undefined);
+        }
+      }
     };
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
@@ -235,8 +242,10 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
     setEnding(true);
     try {
       const res = await endSession(selectedId);
-      flashToast(res.summary ? 'จบแชทแล้ว — อัปเดตความจำระยะยาว ✓' : 'จบแชทแล้ว');
-      await loadDetail(selectedId);
+      flashToast(res.summary ? 'จบแชทแล้ว — เก็บความจำและนำออกจากคิวแล้ว ✓' : 'จบแชทแล้ว — นำออกจากคิวแล้ว');
+      setSelectedId(null); // close + remove the ended chat from the queue
+      setDetail(null);
+      await refreshLists();
     } catch {
       setError('จบแชทไม่สำเร็จ');
     } finally {

@@ -21,6 +21,9 @@ model Customer {
   displayName String?
   firstSeen   DateTime        @default(now())
   lastSeen    DateTime        @default(now())
+  // false once a staff member taps "จบแชท" — hides the chat from the console
+  // queue. A new inbound message flips it back to true (returning customer).
+  active      Boolean         @default(true)
   messages    Message[]
   memory      CustomerMemory?
   sessions    Session[]

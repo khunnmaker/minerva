@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '../db/prisma.js';
 import { requireAuth } from '../auth/middleware.js';
 import { endSession } from '../memory/summarize.js';
+import { pushToConsole } from '../ws/io.js';
 
 const RECENT_MESSAGES = 50;
 
@@ -13,6 +14,7 @@ export async function consoleRoutes(app: FastifyInstance) {
   // (Drafts attach here in M2; for now lastMessage carries the pending question.)
   app.get('/api/queue', async () => {
     const customers = await prisma.customer.findMany({
+      where: { active: true },
       include: { messages: { orderBy: { createdAt: 'desc' }, take: 1 } },
       orderBy: { lastSeen: 'desc' },
     });
@@ -35,6 +37,7 @@ export async function consoleRoutes(app: FastifyInstance) {
   // GET /api/customers — lightweight list for the console selector.
   app.get('/api/customers', async () => {
     const customers = await prisma.customer.findMany({
+      where: { active: true },
       orderBy: { lastSeen: 'desc' },
       select: { id: true, lineUserId: true, displayName: true, firstSeen: true, lastSeen: true },
     });
@@ -88,6 +91,9 @@ export async function consoleRoutes(app: FastifyInstance) {
     const customer = await prisma.customer.findUnique({ where: { id: req.params.id } });
     if (!customer) return reply.code(404).send({ error: 'not_found' });
     const summary = await endSession(req.params.id);
+    // Hide the ended chat from every console's queue (a new message reactivates it).
+    await prisma.customer.update({ where: { id: req.params.id }, data: { active: false } });
+    pushToConsole('conversation:update', { customerId: req.params.id, ended: true });
     return { ok: true, summary };
   });
 }

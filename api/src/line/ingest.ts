@@ -31,9 +31,10 @@ export async function ingestCustomerText(input: IngestInput): Promise<IngestResu
       data: { lineUserId, displayName: displayName ?? undefined },
     });
   } else {
+    // A new message reactivates a previously-ended chat (returns to the queue).
     customer = await prisma.customer.update({
       where: { id: customer.id },
-      data: { lastSeen: new Date() },
+      data: { lastSeen: new Date(), active: true },
     });
   }
 

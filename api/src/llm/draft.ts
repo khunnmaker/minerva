@@ -1,10 +1,11 @@
 import type { Draft } from '@prisma/client';
 import { prisma } from '../db/prisma.js';
 import { env } from '../env.js';
-import { buildDraftPrompt } from './prompt.js';
+import { buildDraftPrompt, buildImagePrompt } from './prompt.js';
 import { parseDraft, SAFE_DEFAULT, type DraftResult } from './parser.js';
 import { applyGuardrails, type SensitiveIntent } from './guardrails.js';
-import { callClaude, llmAvailable } from './anthropic.js';
+import { callClaude, callClaudeWithImage, llmAvailable } from './anthropic.js';
+import { readImageContent } from '../line/contentStore.js';
 import { embeddingsAvailable, embedMessage, embedOne, retrieveSimilarMessages } from '../memory/embeddings.js';
 
 const histLine = (role: string, text: string) =>
@@ -102,6 +103,75 @@ export async function generateDraftForMessage(messageId: string): Promise<DraftO
       usedKb: guarded.result.used_kb,
       note: guarded.result.note,
       retrievedMsgIds: retrievedIds,
+    },
+  });
+
+  return { draft, result: guarded.result, guardrailReason: guarded.reason };
+}
+
+const IMAGE_FALLBACK: DraftResult = {
+  type: 'needs_human',
+  draft: '',
+  used_kb: [],
+  note: 'ลูกค้าส่งรูปภาพ — ขอให้เจ้าหน้าที่ตรวจและตอบเองค่ะ',
+};
+
+// Vision draft for an image message: send the stored image + context to Claude,
+// parse, run the same guardrails, store the Draft. Safe-defaults to needs_human.
+export async function generateImageDraft(messageId: string): Promise<DraftOutcome> {
+  const message = await prisma.message.findUnique({ where: { id: messageId } });
+  if (!message || message.role !== 'customer' || message.attachmentType !== 'image') {
+    throw new Error('image message not found');
+  }
+
+  const kb = await prisma.kbEntry.findMany({ where: { status: 'active' } });
+  const recentRows = await prisma.message.findMany({
+    where: { customerId: message.customerId },
+    orderBy: { createdAt: 'desc' },
+    take: env.RECENT_WINDOW,
+  });
+  const recentWindow = recentRows.reverse().map((m) => histLine(m.role, m.text)).join('\n');
+  const memory = await prisma.customerMemory.findUnique({ where: { customerId: message.customerId } });
+  const summary = memory?.summary || undefined;
+
+  let result: DraftResult;
+  try {
+    const buf = await readImageContent(message.id);
+    if (!llmAvailable() || !buf) {
+      result = IMAGE_FALLBACK;
+    } else {
+      const { system, user } = buildImagePrompt({ kb, recentWindow, summary });
+      const raw = await callClaudeWithImage(user, system, {
+        base64: buf.toString('base64'),
+        mediaType: message.attachmentRef || 'image/jpeg',
+      });
+      result = parseDraft(raw);
+    }
+  } catch {
+    result = IMAGE_FALLBACK;
+  }
+
+  // Same guardrails — scans the AI's draft text for price/clinical claims.
+  const citedKb = kb.filter((k) =>
+    result.used_kb.map((s) => s.toLowerCase()).includes(k.id.toLowerCase()),
+  );
+  const guarded = applyGuardrails(result, message.text, citedKb);
+
+  const draft = await prisma.draft.upsert({
+    where: { messageId },
+    update: {
+      type: guarded.result.type,
+      draftText: guarded.result.draft,
+      usedKb: guarded.result.used_kb,
+      note: guarded.result.note,
+    },
+    create: {
+      messageId,
+      type: guarded.result.type,
+      draftText: guarded.result.draft,
+      usedKb: guarded.result.used_kb,
+      note: guarded.result.note,
+      retrievedMsgIds: [],
     },
   });
 

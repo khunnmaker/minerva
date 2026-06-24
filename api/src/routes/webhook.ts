@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { verifyLineSignature } from '../line/signature.js';
 import { ingestCustomerText } from '../line/ingest.js';
 import { saveImageContent } from '../line/contentStore.js';
-import { generateDraftForMessage } from '../llm/draft.js';
+import { generateDraftForMessage, generateImageDraft } from '../llm/draft.js';
 import { prisma } from '../db/prisma.js';
 import { pushToConsole } from '../ws/io.js';
 
@@ -139,7 +139,17 @@ export async function webhookRoutes(app: FastifyInstance) {
             message,
             isNewCustomer: result.isNewCustomer,
           });
-          await nonTextNeedsHuman(message.id, 'image');
+          // Let Claude read the photo and draft a reply (still human-approved).
+          const imgMsgId = message.id;
+          const imgCustomerId = result.customer.id;
+          void generateImageDraft(imgMsgId)
+            .then((d) =>
+              pushToConsole('draft:new', { messageId: imgMsgId, customerId: imgCustomerId, draft: d.draft, guardrailReason: d.guardrailReason }),
+            )
+            .catch(async (err) => {
+              req.log.error({ err }, 'image draft failed');
+              await nonTextNeedsHuman(imgMsgId, 'image');
+            });
           continue;
         }
 

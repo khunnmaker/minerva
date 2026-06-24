@@ -58,6 +58,35 @@ ${renderKb(kb)}
   return { system, user: parts.join('\n\n') };
 }
 
+// Vision drafting prompt — the customer sent an IMAGE (attached to the user turn).
+export function buildImagePrompt(ctx: Omit<PromptContext, 'question'>): DraftPrompt {
+  const { kb, recentWindow, summary } = ctx;
+
+  const system = `คุณคือผู้ช่วย "ร่าง" คำตอบให้ลูกค้าของบริษัท Prominent (จำหน่ายอุปกรณ์ทันตกรรม) ผ่าน LINE
+ลูกค้าส่ง "รูปภาพ" มา คำตอบจะถูกพนักงานตรวจก่อนส่งจริงเสมอ
+
+ฐานความรู้ (KB ที่เกี่ยวข้อง):
+${renderKb(kb)}
+
+กฎสำหรับรูปภาพ:
+1. ดูรูปที่แนบมา แล้วร่างคำตอบที่เหมาะสม
+2. ถ้าเป็นสลิป/หลักฐานการโอนเงิน → type "draft" ตอบรับว่าได้รับสลิปแล้ว และแจ้งว่าเจ้าหน้าที่จะตรวจสอบและยืนยันยอดให้ — ห้ามยืนยันยอดเงินเอง ห้ามใส่ตัวเลข
+3. ถ้าเป็นรูปอาการในช่องปาก/ฟัน/เหงือก/ภาพถ่ายทางคลินิกหรือ X-ray → type "needs_human", note ว่าต้องให้ทันตแพทย์ดู
+4. ถ้าเป็นรูปสินค้า/สอบถามสินค้า → ตอบจาก KB ถ้าครอบคลุม; ถ้าเกี่ยวกับราคา/สต็อก → type "needs_human"
+5. ถ้าอ่านรูปไม่ออก/ไม่แน่ใจ → type "needs_human" ขอให้เจ้าหน้าที่ช่วยดู
+6. ห้ามแต่งข้อมูล/ราคา/ตัวเลขเพิ่มเอง
+7. โทน: พนักงานบริการหญิง สุภาพ อบอุ่น กระชับ ลงท้าย ค่ะ/คะ
+
+ตอบ JSON อย่างเดียว: {"type":"draft|needs_human|out_of_scope","draft":"...","used_kb":["KB-..."],"note":"..."}`;
+
+  const parts: string[] = [];
+  if (summary) parts.push(`สรุป/ความจำระยะยาวของลูกค้าคนนี้:\n${summary}`);
+  if (recentWindow) parts.push(`ข้อความล่าสุดในบทสนทนา:\n${recentWindow}`);
+  parts.push('ลูกค้าส่งรูปนี้มา (ดูรูปที่แนบ) — ช่วยร่างคำตอบตามกฎด้านบน');
+
+  return { system, user: parts.join('\n\n') };
+}
+
 // Summary prompt (M3) — kept here so the LLM templates live together.
 export function buildSummaryPrompt(history: string): string {
   return `สรุปประวัติลูกค้าคนนี้ให้กระชับ 2-3 ประโยค ครอบคลุมว่าเคยถาม/สนใจ/ซื้ออะไร เพื่อใช้เป็น "ความจำ" ให้ตอบครั้งต่อไปต่อเนื่อง ตอบเป็นข้อความธรรมดาภาษาไทย ไม่มีหัวข้อ/bullet

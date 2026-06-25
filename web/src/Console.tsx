@@ -119,11 +119,12 @@ function MessageBody({ m }: { m: Message }) {
 
 // A horizontal strip of selectable product photos (shared by the direct-match and
 // cross-sell rows). Multi-select; selected items get a ✓ and a ring.
-function PhotoStrip({ items, selected, onToggle, label }: {
+function PhotoStrip({ items, selected, onToggle, label, crossSellSkus }: {
   items: PendingProduct[];
   selected: string[];
   onToggle: (sku: string) => void;
   label: string;
+  crossSellSkus?: Set<string>;
 }) {
   if (!items.length) return null;
   return (
@@ -132,14 +133,16 @@ function PhotoStrip({ items, selected, onToggle, label }: {
       <div className="flex gap-2 overflow-x-auto pb-1">
         {items.map((p) => {
           const sel = selected.includes(p.sku);
+          const isCross = crossSellSkus?.has(p.sku);
           return (
             <button key={p.sku} type="button" onClick={() => onToggle(p.sku)}
-              title={[p.nameEn, p.nameTh].filter(Boolean).join(' / ')}
+              title={(isCross ? '💡 มักซื้อคู่กัน — ' : '') + [p.nameEn, p.nameTh].filter(Boolean).join(' / ')}
               className={'shrink-0 w-[88px] rounded-lg border p-1 text-left transition ' + (sel ? 'border-teal-500 ring-2 ring-teal-400 bg-white' : 'border-teal-100 bg-white/60 hover:border-teal-300')}>
               <div className="relative h-[68px] flex items-center justify-center bg-white rounded">
                 {p.photoSku && <img src={`${API_URL}/content/product/${p.photoSku}`} alt=""
                   className="max-w-full max-h-full object-contain"
                   onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} />}
+                {isCross && <span className="absolute top-0.5 left-0.5 text-[11px] leading-none">💡</span>}
                 {sel && <span className="absolute top-0.5 right-0.5 bg-teal-600 text-white rounded-full p-0.5 flex"><Check size={11} /></span>}
               </div>
               <div className="text-[10px] mt-1 leading-tight">
@@ -574,22 +577,13 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                         </button>
                       </div>
                       {detailsOpen && (
-                        <>
-                          <PhotoStrip
-                            items={detail?.productCandidates ?? []}
-                            selected={selectedProductSkus}
-                            onToggle={toggleProductSku}
-                            label={(detail?.productCandidates.length ?? 0) === 1
-                              ? 'รูปสินค้าจากแคตตาล็อก (กดเพื่อแนบ/ไม่แนบ):'
-                              : 'เลือกรูปสินค้าที่จะแนบ (เลือกได้หลายรูป):'}
-                          />
-                          <PhotoStrip
-                            items={detail?.crossSellCandidates ?? []}
-                            selected={selectedProductSkus}
-                            onToggle={toggleProductSku}
-                            label="💡 สินค้าที่มักซื้อคู่กัน — เสนอเพิ่มได้:"
-                          />
-                        </>
+                        <PhotoStrip
+                          items={[...(detail?.productCandidates ?? []), ...(detail?.crossSellCandidates ?? [])]}
+                          selected={selectedProductSkus}
+                          onToggle={toggleProductSku}
+                          crossSellSkus={new Set((detail?.crossSellCandidates ?? []).map((p) => p.sku))}
+                          label={`เลือกรูปสินค้าที่จะแนบ${(detail?.crossSellCandidates?.length ?? 0) > 0 ? ' (💡 = มักซื้อคู่กัน)' : ''}:`}
+                        />
                       )}
                       <textarea value={editText} onChange={(e) => { setEditText(e.target.value); setNeedsConfirm(false); setRewriteNote(null); }} rows={3}
                         className="w-full p-3 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400 resize-none" placeholder="พิมพ์/แก้คำตอบก่อนส่ง…" />

@@ -36,9 +36,11 @@ function parseRewrite(raw: string): RewriteResult {
   if (m) {
     try {
       const o = JSON.parse(m[0]) as { text?: unknown; note?: unknown };
-      const text = typeof o.text === 'string' ? o.text.trim() : '';
+      const text = typeof o.text === 'string' ? stripMeta(o.text.trim()) : '';
       const note = typeof o.note === 'string' && o.note.trim() ? o.note.trim() : null;
-      if (text) return { text: stripMeta(text), note };
+      // Honor the parsed result even when text is empty — the caller falls back to
+      // the original input, so the raw JSON never leaks into the reply box.
+      return { text, note };
     } catch {
       /* fall through to plain-text handling */
     }

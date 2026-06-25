@@ -27,6 +27,7 @@ export interface CustomerLite {
   id: string;
   lineUserId: string;
   displayName: string | null;
+  nickname: string | null;
   firstSeen?: string;
   lastSeen: string;
 }
@@ -121,6 +122,12 @@ export async function login(email: string, password: string): Promise<{ token: s
 export const getQueue = () => authed<{ queue: QueueItem[] }>('/api/queue');
 export const getCustomers = () => authed<{ customers: CustomerLite[] }>('/api/customers');
 export const getCustomer = (id: string) => authed<CustomerDetail>(`/api/customers/${id}`);
+
+export const setNickname = (customerId: string, nickname: string) =>
+  authed<{ ok: boolean; nickname: string | null }>(`/api/customers/${customerId}/nickname`, {
+    method: 'POST',
+    body: JSON.stringify({ nickname }),
+  });
 
 export const regenerateDraft = (messageId: string) =>
   authed<{ draft: Draft }>(`/api/messages/${messageId}/draft`, { method: 'POST' });

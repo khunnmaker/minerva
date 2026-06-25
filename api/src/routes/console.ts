@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { prisma } from '../db/prisma.js';
 import { requireAuth } from '../auth/middleware.js';
 import { endSession } from '../memory/summarize.js';
@@ -26,6 +27,7 @@ export async function consoleRoutes(app: FastifyInstance) {
           id: c.id,
           lineUserId: c.lineUserId,
           displayName: c.displayName,
+          nickname: c.nickname,
           lastSeen: c.lastSeen,
         },
         lastMessage: c.messages[0],
@@ -39,7 +41,7 @@ export async function consoleRoutes(app: FastifyInstance) {
     const customers = await prisma.customer.findMany({
       where: { active: true },
       orderBy: { lastSeen: 'desc' },
-      select: { id: true, lineUserId: true, displayName: true, firstSeen: true, lastSeen: true },
+      select: { id: true, lineUserId: true, displayName: true, nickname: true, firstSeen: true, lastSeen: true },
     });
     return { customers };
   });
@@ -95,5 +97,18 @@ export async function consoleRoutes(app: FastifyInstance) {
     await prisma.customer.update({ where: { id: req.params.id }, data: { active: false } });
     pushToConsole('conversation:update', { customerId: req.params.id, ended: true });
     return { ok: true, summary };
+  });
+
+  // POST /api/customers/:id/nickname — set (or clear) the staff-assigned nickname.
+  app.post<{ Params: { id: string } }>('/api/customers/:id/nickname', async (req, reply) => {
+    const parsed = z.object({ nickname: z.string().max(80) }).safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
+    const nickname = parsed.data.nickname.trim() || null;
+    const customer = await prisma.customer
+      .update({ where: { id: req.params.id }, data: { nickname } })
+      .catch(() => null);
+    if (!customer) return reply.code(404).send({ error: 'not_found' });
+    pushToConsole('conversation:update', { customerId: req.params.id });
+    return { ok: true, nickname };
   });
 }

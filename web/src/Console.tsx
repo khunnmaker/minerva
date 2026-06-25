@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Bot, User, LogOut, Clock, Inbox, Wifi, WifiOff, Loader2, ShieldCheck, MessageSquare,
-  Send, Check, CheckCircle2, RefreshCw, Brain, GraduationCap, Wand2,
+  Send, Check, CheckCircle2, RefreshCw, Brain, GraduationCap, Wand2, Pencil,
 } from 'lucide-react';
 import {
-  getQueue, getCustomers, getCustomer, clearSession, regenerateDraft, rewriteText, sendReply,
+  getQueue, getCustomers, getCustomer, clearSession, regenerateDraft, rewriteText, sendReply, setNickname,
   getLearned, promoteLearned, rejectLearned, endSession, API_URL, getToken,
   type Agent, type CustomerLite, type CustomerDetail, type Message, type DraftType, type LearnedAnswer,
 } from './lib/api';
@@ -20,7 +20,7 @@ function fmtTime(t?: string) {
     return '';
   }
 }
-const nameOf = (c: CustomerLite) => c.displayName || c.lineUserId;
+const nameOf = (c: CustomerLite) => c.nickname || c.displayName || c.lineUserId;
 
 const TYPE_META: Record<DraftType, { label: string; cls: string }> = {
   draft: { label: 'ร่างพร้อมส่ง', cls: 'bg-emerald-100 text-emerald-700 border-emerald-300' },
@@ -76,6 +76,7 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
   const [editText, setEditText] = useState('');
   const [sending, setSending] = useState(false);
   const [rewriting, setRewriting] = useState(false);
+  const [nickEdit, setNickEdit] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
   const [needsConfirm, setNeedsConfirm] = useState(false);
   const [toast, setToast] = useState('');
@@ -237,6 +238,19 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
     }
   }
 
+  async function saveNick() {
+    if (nickEdit === null || !selectedId) return;
+    const val = nickEdit;
+    setNickEdit(null);
+    try {
+      await setNickname(selectedId, val);
+      await loadDetail(selectedId);
+      await refreshLists();
+    } catch {
+      setError('ตั้งชื่อเล่นไม่สำเร็จ');
+    }
+  }
+
   async function endChat() {
     if (!selectedId || ending) return;
     setEnding(true);
@@ -335,9 +349,22 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
               <LearningView learned={learned} isSupervisor={agent.role === 'supervisor'} onPromote={promote} onReject={reject} />
             ) : (
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col h-full">
-              <div className="px-4 py-3 bg-green-600 text-white rounded-t-2xl font-semibold flex items-center justify-between">
-                <span className="flex items-center gap-2"><MessageSquare size={18} /> บทสนทนา</span>
-                {detail && <span className="text-xs font-normal">ถาม {detail.stats.questions} · ตอบ {detail.stats.replies}</span>}
+              <div className="px-4 py-3 bg-green-600 text-white rounded-t-2xl font-semibold flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <MessageSquare size={18} className="shrink-0" />
+                  {nickEdit !== null ? (
+                    <input autoFocus value={nickEdit} onChange={(e) => setNickEdit(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveNick(); if (e.key === 'Escape') setNickEdit(null); }}
+                      onBlur={saveNick} placeholder="ตั้งชื่อเล่น…"
+                      className="text-slate-800 bg-white text-sm rounded-md px-2 py-0.5 w-40 outline-none" />
+                  ) : (
+                    <>
+                      <span className="truncate">{detail ? nameOf(detail.customer) : 'บทสนทนา'}</span>
+                      {detail && <button onClick={() => setNickEdit(detail.customer.nickname ?? '')} title="ตั้งชื่อเล่น" className="opacity-80 hover:opacity-100 shrink-0"><Pencil size={13} /></button>}
+                    </>
+                  )}
+                </div>
+                {detail && <span className="text-xs font-normal shrink-0">ถาม {detail.stats.questions} · ตอบ {detail.stats.replies}</span>}
               </div>
 
               {!selectedId ? (

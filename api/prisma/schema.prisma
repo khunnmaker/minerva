@@ -19,6 +19,8 @@ model Customer {
   id          String          @id @default(cuid())
   lineUserId  String          @unique
   displayName String?
+  // staff-assigned nickname (shown in the console in preference to the LINE name)
+  nickname    String?
   firstSeen   DateTime        @default(now())
   lastSeen    DateTime        @default(now())
   // false once a staff member taps "จบแชท" — hides the chat from the console

@@ -85,7 +85,7 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
   const [searchResults, setSearchResults] = useState<CustomerLite[] | null>(null);
   const [ending, setEnding] = useState(false);
   const [needsConfirm, setNeedsConfirm] = useState(false);
-  const [attachPhoto, setAttachPhoto] = useState(false);
+  const [selectedProductSku, setSelectedProductSku] = useState<string | null>(null);
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
 
@@ -108,7 +108,7 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
       setEditText(d.pendingDraft?.draftText ?? '');
       setNeedsConfirm(false);
       setRewriteNote(null);
-      setAttachPhoto(!!d.pendingProduct?.photoSku);
+      setSelectedProductSku(d.pendingProduct?.photoSku ? d.pendingProduct.sku : null);
     } finally {
       setLoadingDetail(false);
     }
@@ -206,9 +206,7 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
     setSending(true);
     setError('');
     try {
-      const attachSku =
-        attachPhoto && detail?.pendingProduct?.sku ? detail.pendingProduct.sku : undefined;
-      const res = await sendReply(msgId, editText.trim(), needsConfirm, attachSku);
+      const res = await sendReply(msgId, editText.trim(), needsConfirm, selectedProductSku ?? undefined);
       if ('needsConfirm' in res) {
         setNeedsConfirm(true);
         setError('คำตอบมีตัวเลข — โปรดตรวจสอบแล้วกด "ยืนยันส่ง" อีกครั้ง');
@@ -449,28 +447,38 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                         <span className={'text-xs font-semibold px-2 py-1 rounded-full border ' + TYPE_META[draft.type].cls}>{TYPE_META[draft.type].label}</span>
                       </div>
                       {draft.note && <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2 border border-slate-200">{draft.note}</div>}
-                      {detail?.pendingProduct && (
-                        <div className="flex items-center gap-3 bg-teal-50 border border-teal-200 rounded-xl p-2">
-                          {detail.pendingProduct.photoSku && (
-                            <img src={`${API_URL}/content/product/${detail.pendingProduct.photoSku}`} alt=""
-                              className="w-16 h-16 object-contain bg-white rounded-lg border border-teal-100 shrink-0"
-                              onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-                          )}
-                          <div className="min-w-0 flex-1 text-xs leading-tight">
-                            <div className="font-semibold text-teal-800 truncate">
-                              {[detail.pendingProduct.nameEn, detail.pendingProduct.nameTh].filter(Boolean).join(' / ') || detail.pendingProduct.sku}
-                            </div>
-                            <div className="text-teal-700">
-                              {detail.pendingProduct.price > 0 ? `${detail.pendingProduct.price.toLocaleString()} บาท` : 'ราคา: ขอเจ้าหน้าที่ยืนยัน'}
-                              <span className="text-teal-400"> · {detail.pendingProduct.sku}</span>
-                            </div>
+                      {detail?.productCandidates && detail.productCandidates.length > 0 && (
+                        <div className="bg-teal-50 border border-teal-200 rounded-xl p-2 space-y-1.5">
+                          <div className="text-[11px] text-teal-700 font-medium">
+                            {detail.productCandidates.length === 1
+                              ? 'รูปสินค้าจากแคตตาล็อก (กดเพื่อแนบ/ไม่แนบ):'
+                              : 'เลือกรูปสินค้าที่จะแนบ (กดเลือก 1 รูป):'}
                           </div>
-                          {detail.pendingProduct.photoSku && (
-                            <label className="flex items-center gap-1.5 text-xs text-teal-800 shrink-0 cursor-pointer select-none">
-                              <input type="checkbox" checked={attachPhoto} onChange={(e) => setAttachPhoto(e.target.checked)} />
-                              แนบรูป
-                            </label>
-                          )}
+                          <div className="flex gap-2 overflow-x-auto pb-1">
+                            {detail.productCandidates.map((p) => {
+                              const sel = selectedProductSku === p.sku;
+                              return (
+                                <button key={p.sku} type="button"
+                                  onClick={() => setSelectedProductSku(sel ? null : p.sku)}
+                                  title={[p.nameEn, p.nameTh].filter(Boolean).join(' / ')}
+                                  className={'shrink-0 w-[88px] rounded-lg border p-1 text-left transition ' + (sel ? 'border-teal-500 ring-2 ring-teal-400 bg-white' : 'border-teal-100 bg-white/60 hover:border-teal-300')}>
+                                  <div className="relative h-[68px] flex items-center justify-center bg-white rounded">
+                                    {p.photoSku && <img src={`${API_URL}/content/product/${p.photoSku}`} alt=""
+                                      className="max-w-full max-h-full object-contain"
+                                      onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} />}
+                                    {sel && <span className="absolute top-0.5 right-0.5 bg-teal-600 text-white rounded-full p-0.5 flex"><Check size={11} /></span>}
+                                  </div>
+                                  <div className="text-[10px] mt-1 leading-tight">
+                                    <div className="font-semibold text-teal-800 truncate">{[p.nameEn, p.nameTh].filter(Boolean).join(' / ') || p.sku}</div>
+                                    <div className="text-teal-600">{p.price > 0 ? `${p.price.toLocaleString()} บาท` : '—'}</div>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div className="text-[11px] text-teal-700">
+                            {selectedProductSku ? '✓ จะแนบรูปที่เลือกไปกับคำตอบ' : 'ยังไม่เลือกรูป — จะส่งเฉพาะข้อความ'}
+                          </div>
                         </div>
                       )}
                       <textarea value={editText} onChange={(e) => { setEditText(e.target.value); setNeedsConfirm(false); setRewriteNote(null); }} rows={3}

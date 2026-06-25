@@ -58,6 +58,7 @@ export interface CustomerDetail {
   messages: Message[];
   pendingDraft: Draft | null;
   pendingProduct: PendingProduct | null;
+  productCandidates: PendingProduct[];
   pendingMessageId: string | null;
   memory: { summary: string; updatedAt: string } | null;
   stats: { questions: number; replies: number; lastSeen: string };

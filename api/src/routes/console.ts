@@ -7,6 +7,8 @@ import { pushToConsole } from '../ws/io.js';
 
 const RECENT_MESSAGES = 50;
 
+type ProductCard = { sku: string; nameEn: string; nameTh: string; price: number; photoSku: string | null };
+
 export async function consoleRoutes(app: FastifyInstance) {
   // Everything here requires a logged-in agent.
   app.addHook('preHandler', requireAuth);
@@ -95,8 +97,8 @@ export async function consoleRoutes(app: FastifyInstance) {
 
     const memory = await prisma.customerMemory.findUnique({ where: { customerId: id } });
 
-    // Catalog product the AI drafted about — its photo can be attached on send.
-    let pendingProduct = null;
+    // Catalog product the AI confidently drafted about (auto-selected photo).
+    let pendingProduct: ProductCard | null = null;
     if (pendingDraft?.productSku) {
       const p = await prisma.product.findUnique({ where: { sku: pendingDraft.productSku } });
       if (p) {
@@ -104,11 +106,30 @@ export async function consoleRoutes(app: FastifyInstance) {
       }
     }
 
+    // Candidate product photos for the team to choose from (match order preserved).
+    let productCandidates: ProductCard[] = [];
+    if (pendingDraft?.candidateSkus?.length) {
+      const prods = await prisma.product.findMany({ where: { sku: { in: pendingDraft.candidateSkus } } });
+      const bySku = new Map(prods.map((p) => [p.sku, p]));
+      const seenPhoto = new Set<string>();
+      productCandidates = pendingDraft.candidateSkus
+        .map((sku) => bySku.get(sku))
+        .filter((p): p is NonNullable<typeof p> => !!p && !!p.photoSku)
+        // variants share a photo — show each distinct image once.
+        .filter((p) => {
+          if (seenPhoto.has(p.photoSku as string)) return false;
+          seenPhoto.add(p.photoSku as string);
+          return true;
+        })
+        .map((p) => ({ sku: p.sku, nameEn: p.nameEn, nameTh: p.nameTh, price: p.price, photoSku: p.photoSku }));
+    }
+
     return {
       customer,
       messages: ordered,
       pendingDraft,
       pendingProduct,
+      productCandidates,
       pendingMessageId: last && last.role === 'customer' ? last.id : null,
       memory: memory ? { summary: memory.summary, updatedAt: memory.updatedAt } : null,
       stats: {

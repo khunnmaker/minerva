@@ -134,6 +134,9 @@ export async function generateDraftForMessage(messageId: string): Promise<DraftO
     matchedSku = products.find((p) => p.price > 0 && flat.includes(`${p.price}บาท`))?.sku;
   }
   const productSku = guarded.result.type === 'draft' ? matchedSku ?? null : null;
+  // Candidate photos for staff to choose from when the match is uncertain — the
+  // matched products that actually have a photo (the AI's pick is among them).
+  const candidateSkus = products.filter((p) => p.photoSku).slice(0, 6).map((p) => p.sku);
 
   const draft = await prisma.draft.upsert({
     where: { messageId },
@@ -143,6 +146,7 @@ export async function generateDraftForMessage(messageId: string): Promise<DraftO
       usedKb: guarded.result.used_kb,
       note: guarded.result.note,
       productSku,
+      candidateSkus,
     },
     create: {
       messageId,
@@ -152,6 +156,7 @@ export async function generateDraftForMessage(messageId: string): Promise<DraftO
       note: guarded.result.note,
       retrievedMsgIds: retrievedIds,
       productSku,
+      candidateSkus,
     },
   });
 

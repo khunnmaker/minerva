@@ -120,6 +120,8 @@ model Draft {
   retrievedMsgIds String[]
   // catalog product this draft is about — its photo is attached on send (M4)
   productSku      String?
+  // candidate product SKUs (with photos) for staff to choose from when unsure
+  candidateSkus   String[]
   createdAt       DateTime @default(now())
 }
 

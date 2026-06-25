@@ -524,7 +524,6 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                     </>
                   )}
                 </div>
-                {detail && <span className="text-xs font-normal shrink-0">ถาม {detail.stats.questions} · ตอบ {detail.stats.replies}</span>}
               </div>
 
               {!selectedId ? (
@@ -536,8 +535,9 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                   {detail && (
                     <div className="border-b border-slate-100 bg-slate-50">
                       <div className="px-4 py-2 text-xs text-slate-500 flex items-center gap-2">
-                        <b className="text-slate-700">{nameOf(detail.customer)}</b>
-                        <span>· LINE: {detail.customer.lineUserId}</span>
+                        <b className="text-slate-700 shrink-0">{nameOf(detail.customer)}</b>
+                        <span className="truncate min-w-0">· LINE: {detail.customer.lineUserId}</span>
+                        <span className="shrink-0">· ถาม {detail.stats.questions} · ตอบ {detail.stats.replies}</span>
                         <button onClick={endChat} disabled={ending}
                           className="ml-auto text-[11px] px-2 py-1 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-slate-600 flex items-center gap-1 disabled:opacity-50"
                           title="จบบทสนทนาแล้วสรุปความจำระยะยาว">

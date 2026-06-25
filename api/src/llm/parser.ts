@@ -40,7 +40,7 @@ export function parseDraft(raw: string): DraftResult {
       ? obj.used_products.filter((x): x is string => typeof x === 'string')
       : [];
     const cross_sell_terms = Array.isArray(obj.cross_sell_terms)
-      ? obj.cross_sell_terms.filter((x): x is string => typeof x === 'string').slice(0, 3)
+      ? obj.cross_sell_terms.filter((x): x is string => typeof x === 'string').slice(0, 6)
       : [];
 
     return { type, draft, used_kb, used_products, cross_sell_terms, note };

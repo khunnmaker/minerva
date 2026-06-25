@@ -13,6 +13,7 @@ import { embedMessage } from '../memory/embeddings.js';
 import { readImageContent } from '../line/contentStore.js';
 import { PRODUCT_PHOTO_DIR } from './content.js';
 import { saveStaffUpload, readStaffUploadMeta, UPLOAD_ID_RE } from '../line/staffUploads.js';
+import { recordCrossSellOutcome } from '../catalog/crossSell.js';
 import { pushToConsole } from '../ws/io.js';
 
 const replyBody = z.object({
@@ -177,6 +178,13 @@ export async function messageRoutes(app: FastifyInstance) {
 
     // Embed the sent reply so it's retrievable in future drafts (best-effort).
     void embedMessage(agentMessage.id, finalText).catch(() => undefined);
+
+    // Cross-sell learning — only when staff engaged the picker (attached >=1 catalog
+    // photo): strengthen the cross-sells they attached, demote ones shown but skipped.
+    const anchorSku = draft?.productSku ?? draft?.candidateSkus?.[0] ?? null;
+    if (anchorSku && draft?.crossSellSkus?.length && parsed.data.attachProductSkus?.length) {
+      void recordCrossSellOutcome(anchorSku, draft.crossSellSkus, parsed.data.attachProductSkus).catch(() => undefined);
+    }
 
     // Learning loop: capture edits (final differs from the AI draft).
     let learnedCaptured = false;

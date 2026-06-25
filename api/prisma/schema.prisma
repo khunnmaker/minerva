@@ -130,6 +130,22 @@ model Draft {
   createdAt       DateTime @default(now())
 }
 
+// Learned cross-sell relationship: when a customer asks about anchorSku, how good
+// is crossSku as an add-on? score rises when staff attach it, falls when it's shown
+// but skipped — so good pairings surface and ignored ones fade.
+model CrossSellLink {
+  id          String   @id @default(cuid())
+  anchorSku   String
+  crossSku    String
+  score       Int      @default(0)
+  shownCount  Int      @default(0)
+  chosenCount Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([anchorSku, crossSku])
+  @@index([anchorSku])
+}
+
 // Product catalog — extracted from the Prominent PDF catalogue via vision.
 // price=0 means "unknown" (the AI must NOT quote it; defer to staff). Variant
 // SKUs (color/size) share a photo via photoSku (resolved to the cell's lead SKU).

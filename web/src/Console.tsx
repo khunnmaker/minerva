@@ -119,39 +119,47 @@ function MessageBody({ m }: { m: Message }) {
 
 // A horizontal strip of selectable product photos (shared by the direct-match and
 // cross-sell rows). Multi-select; selected items get a ✓ and a ring.
-function PhotoStrip({ items, selected, onToggle, label, crossSellSkus }: {
-  items: PendingProduct[];
+function PhotoStrip({ direct, cross, selected, onToggle, label }: {
+  direct: PendingProduct[];
+  cross: PendingProduct[];
   selected: string[];
   onToggle: (sku: string) => void;
   label: string;
-  crossSellSkus?: Set<string>;
 }) {
-  if (!items.length) return null;
+  if (!direct.length && !cross.length) return null;
+  const thumb = (p: PendingProduct, isCross: boolean) => {
+    const sel = selected.includes(p.sku);
+    return (
+      <button key={p.sku} type="button" onClick={() => onToggle(p.sku)}
+        title={(isCross ? '💡 มักซื้อคู่กัน — ' : '') + [p.nameEn, p.nameTh].filter(Boolean).join(' / ')}
+        className={'shrink-0 w-[88px] rounded-lg border p-1 text-left transition ' + (sel ? 'border-teal-500 ring-2 ring-teal-400 bg-white' : 'border-teal-100 bg-white/60 hover:border-teal-300')}>
+        <div className="relative h-[68px] flex items-center justify-center bg-white rounded">
+          {p.photoSku && <img src={`${API_URL}/content/product/${p.photoSku}`} alt=""
+            className="max-w-full max-h-full object-contain"
+            onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} />}
+          {isCross && <span className="absolute top-0.5 left-0.5 text-[11px] leading-none">💡</span>}
+          {sel && <span className="absolute top-0.5 right-0.5 bg-teal-600 text-white rounded-full p-0.5 flex"><Check size={11} /></span>}
+        </div>
+        <div className="text-[10px] mt-1 leading-tight">
+          <div className="font-semibold text-teal-800 truncate">{[p.nameEn, p.nameTh].filter(Boolean).join(' / ') || p.sku}</div>
+          <div className="text-teal-600">{p.price > 0 ? `${p.price.toLocaleString()} บาท` : '—'}</div>
+        </div>
+      </button>
+    );
+  };
   return (
     <div className="bg-teal-50 border border-teal-200 rounded-xl p-2 space-y-1.5">
       <div className="text-[11px] text-teal-700 font-medium">{label}</div>
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {items.map((p) => {
-          const sel = selected.includes(p.sku);
-          const isCross = crossSellSkus?.has(p.sku);
-          return (
-            <button key={p.sku} type="button" onClick={() => onToggle(p.sku)}
-              title={(isCross ? '💡 มักซื้อคู่กัน — ' : '') + [p.nameEn, p.nameTh].filter(Boolean).join(' / ')}
-              className={'shrink-0 w-[88px] rounded-lg border p-1 text-left transition ' + (sel ? 'border-teal-500 ring-2 ring-teal-400 bg-white' : 'border-teal-100 bg-white/60 hover:border-teal-300')}>
-              <div className="relative h-[68px] flex items-center justify-center bg-white rounded">
-                {p.photoSku && <img src={`${API_URL}/content/product/${p.photoSku}`} alt=""
-                  className="max-w-full max-h-full object-contain"
-                  onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} />}
-                {isCross && <span className="absolute top-0.5 left-0.5 text-[11px] leading-none">💡</span>}
-                {sel && <span className="absolute top-0.5 right-0.5 bg-teal-600 text-white rounded-full p-0.5 flex"><Check size={11} /></span>}
-              </div>
-              <div className="text-[10px] mt-1 leading-tight">
-                <div className="font-semibold text-teal-800 truncate">{[p.nameEn, p.nameTh].filter(Boolean).join(' / ') || p.sku}</div>
-                <div className="text-teal-600">{p.price > 0 ? `${p.price.toLocaleString()} บาท` : '—'}</div>
-              </div>
-            </button>
-          );
-        })}
+      <div className="flex gap-2 overflow-x-auto pb-1 items-stretch">
+        {direct.map((p) => thumb(p, false))}
+        {direct.length > 0 && cross.length > 0 && (
+          <div className="shrink-0 self-stretch flex flex-col items-center justify-center px-0.5">
+            <div className="w-px flex-1 bg-teal-300" />
+            <span className="text-[9px] text-teal-500 py-1 [writing-mode:vertical-rl]">ขายคู่</span>
+            <div className="w-px flex-1 bg-teal-300" />
+          </div>
+        )}
+        {cross.map((p) => thumb(p, true))}
       </div>
     </div>
   );
@@ -578,11 +586,11 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                       </div>
                       {detailsOpen && (
                         <PhotoStrip
-                          items={[...(detail?.productCandidates ?? []), ...(detail?.crossSellCandidates ?? [])]}
+                          direct={detail?.productCandidates ?? []}
+                          cross={detail?.crossSellCandidates ?? []}
                           selected={selectedProductSkus}
                           onToggle={toggleProductSku}
-                          crossSellSkus={new Set((detail?.crossSellCandidates ?? []).map((p) => p.sku))}
-                          label={`เลือกรูปสินค้าที่จะแนบ${(detail?.crossSellCandidates?.length ?? 0) > 0 ? ' (💡 = มักซื้อคู่กัน)' : ''}:`}
+                          label={`เลือกรูปสินค้าที่จะแนบ${(detail?.crossSellCandidates?.length ?? 0) > 0 ? ' — ซ้าย = ลูกค้าถาม · ขวา 💡 = ขายคู่' : ''}:`}
                         />
                       )}
                       <textarea value={editText} onChange={(e) => { setEditText(e.target.value); setNeedsConfirm(false); setRewriteNote(null); }} rows={3}

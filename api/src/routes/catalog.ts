@@ -22,6 +22,16 @@ export async function catalogRoutes(app: FastifyInstance) {
     return { products: await findProducts(q, 8) };
   });
 
+  // GET /api/catalog/crosssell/:sku — learned cross-sell links for an anchor product
+  // (transparency into the learning loop), highest score first.
+  app.get<{ Params: { sku: string } }>('/api/catalog/crosssell/:sku', async (req) => {
+    const links = await prisma.crossSellLink.findMany({
+      where: { anchorSku: req.params.sku },
+      orderBy: { score: 'desc' },
+    });
+    return { anchorSku: req.params.sku, links };
+  });
+
   // POST /api/catalog/test-draft {q} — dry-run a draft for a question without
   // creating any customer/message. Verifies the price-from-catalog path safely.
   app.post('/api/catalog/test-draft', async (req, reply) => {

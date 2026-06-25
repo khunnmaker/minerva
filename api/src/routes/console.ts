@@ -4,7 +4,6 @@ import { prisma } from '../db/prisma.js';
 import { requireAuth } from '../auth/middleware.js';
 import { endSession } from '../memory/summarize.js';
 import { sendLineText } from '../line/send.js';
-import { hasPrice } from '../llm/guardrails.js';
 import { pushToConsole } from '../ws/io.js';
 
 const RECENT_MESSAGES = 50;
@@ -248,10 +247,7 @@ export async function consoleRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>('/api/customers/:id/message', async (req, reply) => {
     const parsed = z.object({ text: z.string().min(1).max(4000), confirmNumbers: z.boolean().optional() }).safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
-    const { text, confirmNumbers } = parsed.data;
-    if (hasPrice(text) && !confirmNumbers) {
-      return reply.code(409).send({ error: 'needs_confirm', reason: 'contains_price' });
-    }
+    const { text } = parsed.data;
     const customer = await prisma.customer.findUnique({ where: { id: req.params.id } });
     if (!customer) return reply.code(404).send({ error: 'not_found' });
     let sendResult;

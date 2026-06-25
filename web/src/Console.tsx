@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Bot, User, LogOut, Clock, Inbox, Wifi, WifiOff, Loader2, ShieldCheck, MessageSquare,
-  Send, Check, CheckCircle2, RefreshCw, Brain, GraduationCap, Wand2, Pencil,
+  Send, Check, CheckCircle2, RefreshCw, Brain, GraduationCap, Wand2, Pencil, AlertTriangle,
 } from 'lucide-react';
 import {
   getQueue, getCustomers, getCustomer, clearSession, regenerateDraft, rewriteText, sendReply, setNickname,
@@ -77,6 +77,7 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
   const [sending, setSending] = useState(false);
   const [rewriting, setRewriting] = useState(false);
   const [nickEdit, setNickEdit] = useState<string | null>(null);
+  const [rewriteNote, setRewriteNote] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
   const [needsConfirm, setNeedsConfirm] = useState(false);
   const [toast, setToast] = useState('');
@@ -100,6 +101,7 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
       setDetail(d);
       setEditText(d.pendingDraft?.draftText ?? '');
       setNeedsConfirm(false);
+      setRewriteNote(null);
     } finally {
       setLoadingDetail(false);
     }
@@ -210,9 +212,11 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
     if (!editText.trim() || rewriting || sending) return;
     setRewriting(true);
     setError('');
+    setRewriteNote(null);
     try {
-      const { text } = await rewriteText(editText.trim());
-      setEditText(text);
+      const res = await rewriteText(editText.trim());
+      setEditText(res.text);
+      setRewriteNote(res.note); // staff-only note — shown OUTSIDE the reply box
       setNeedsConfirm(false); // text changed — re-check numbers on send
       flashToast('เรียบเรียงใหม่แล้ว — ตรวจทานก่อนส่ง');
     } catch (e) {
@@ -413,8 +417,14 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                         <span className={'text-xs font-semibold px-2 py-1 rounded-full border ' + TYPE_META[draft.type].cls}>{TYPE_META[draft.type].label}</span>
                       </div>
                       {draft.note && <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2 border border-slate-200">{draft.note}</div>}
-                      <textarea value={editText} onChange={(e) => { setEditText(e.target.value); setNeedsConfirm(false); }} rows={3}
+                      <textarea value={editText} onChange={(e) => { setEditText(e.target.value); setNeedsConfirm(false); setRewriteNote(null); }} rows={3}
                         className="w-full p-3 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400 resize-none" placeholder="พิมพ์/แก้คำตอบก่อนส่ง…" />
+                      {rewriteNote && (
+                        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2 flex items-start gap-1.5">
+                          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                          <span><span className="font-semibold">หมายเหตุจาก AI</span> (ไม่ส่งให้ลูกค้า): {rewriteNote}</span>
+                        </div>
+                      )}
                       {error && <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-2">{error}</div>}
                       <div className="grid grid-cols-3 gap-2">
                         <button onClick={approve} disabled={sending || rewriting || !editText.trim()}

@@ -134,7 +134,7 @@ export const regenerateDraft = (messageId: string) =>
 
 // Polish an agent's drafted reply (grammar/wording) without changing meaning/numbers.
 export const rewriteText = (text: string) =>
-  authed<{ text: string }>('/api/rewrite', { method: 'POST', body: JSON.stringify({ text }) });
+  authed<{ text: string; note: string | null }>('/api/rewrite', { method: 'POST', body: JSON.stringify({ text }) });
 
 export interface ReplyResult {
   ok: boolean;

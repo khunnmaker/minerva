@@ -147,8 +147,8 @@ export async function messageRoutes(app: FastifyInstance) {
     const parsed = rewriteBody.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
     try {
-      const text = await rewriteText(parsed.data.text);
-      return { text };
+      const result = await rewriteText(parsed.data.text);
+      return { text: result.text, note: result.note };
     } catch (err) {
       req.log.error({ err }, 'rewrite failed');
       return reply.code(502).send({ error: 'rewrite_failed' });

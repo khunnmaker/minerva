@@ -53,13 +53,29 @@ export async function buildCrossSell(
       if (tryAdd(h)) break;
     }
   }
-  // Second pass: top up toward TARGET.
+  // Second pass: top up toward TARGET with more products from each AI term.
   if (out.length < TARGET) {
     for (const term of aiTerms) {
       if (out.length >= TARGET) break;
-      for (const h of await findProducts(term, 6)) {
+      for (const h of await findProducts(term, 8)) {
         if (out.length >= TARGET) break;
         tryAdd(h);
+      }
+    }
+  }
+  // Final fallback to reach TARGET: catalog-page neighbors of the anchor — products
+  // printed on the same page are usually the same family / complementary.
+  if (out.length < TARGET && anchorSku) {
+    const anchor = await prisma.product.findUnique({ where: { sku: anchorSku } });
+    if (anchor?.page != null) {
+      const neighbors = await prisma.product.findMany({
+        where: { page: anchor.page, status: 'active', photoSku: { not: null } },
+        orderBy: { sku: 'asc' },
+        take: 60,
+      });
+      for (const p of neighbors) {
+        if (out.length >= TARGET) break;
+        tryAdd(p);
       }
     }
   }

@@ -8,6 +8,7 @@ export interface PromptContext {
   summary?: string; // long-term memory (M3)
   retrievedMessages?: string; // retrieval (M3)
   products?: ProductMatch[]; // catalog matches for the question (M4)
+  suggestProducts?: ProductMatch[]; // cross-sell products the staff chose to upsell (mention these)
 }
 
 export interface DraftPrompt {
@@ -39,7 +40,7 @@ function renderProducts(products: ProductMatch[]): string {
 // (trusted); the customer message is passed in the USER turn, fenced and labelled
 // as DATA (untrusted) so it cannot redefine the rules or the JSON envelope.
 export function buildDraftPrompt(ctx: PromptContext): DraftPrompt {
-  const { question, kb, recentWindow, summary, retrievedMessages, products } = ctx;
+  const { question, kb, recentWindow, summary, retrievedMessages, products, suggestProducts } = ctx;
 
   const system = `คุณคือผู้ช่วย "ร่าง" คำตอบให้ลูกค้าของบริษัท Prominent (จำหน่ายอุปกรณ์ทันตกรรม) ผ่าน LINE
 คำตอบจะถูกพนักงานตรวจก่อนส่งจริงเสมอ
@@ -51,6 +52,7 @@ ${renderKb(kb)}
 1. พยายามตอบเองให้ได้มากที่สุด โดยใช้ KB + รายการสินค้าที่ตรงกับคำถาม + บริบทบทสนทนาล่าสุด + ความจำ/ประวัติของลูกค้า + ข้อความเก่าที่เกี่ยวข้อง มาประกอบกัน เดาเจตนาของลูกค้าจากบริบทแล้วตอบให้เป็นประโยชน์ — แต่ห้ามแต่งตัวเลข/ราคา/สต็อก/ข้อเท็จจริงเฉพาะที่ไม่มีอยู่ในข้อมูล
 2. ถ้ามี "สินค้าที่ตรงกับคำถาม" และลูกค้าถามถึงสินค้านั้น ให้ตอบโดยใช้ชื่อและ "ราคา" จากรายการนั้นได้เลย (ราคาในแคตตาล็อกถือเป็นข้อมูลที่เชื่อถือได้ ไม่ใช่การเดา) — เลือกตัวที่ตรงที่สุด ถ้ามีหลายตัวใกล้เคียงและไม่แน่ใจว่าหมายถึงตัวไหน ให้ถามยืนยันรุ่น/ขนาด และใส่ SKU ที่ใช้ลงใน used_products เสมอ ถ้าสินค้านั้นราคาเป็น "ขอเจ้าหน้าที่ยืนยัน" ห้ามเดาราคา. ห้ามเพิ่มข้อความที่ไม่มีข้อมูลรองรับ เช่น "ราคารวม VAT", การรับประกัน, หรือเงื่อนไขอื่น ๆ ที่ไม่ได้ระบุไว้ในข้อมูล
    นอกจากนี้ ถ้าลูกค้าถามถึงสินค้าชิ้นหนึ่ง ให้เสนอ "ประเภทสินค้าที่มักใช้คู่/ซื้อเพิ่มด้วยกัน" ประมาณ 5-6 อย่างใน cross_sell_terms เป็นคำค้น **ภาษาอังกฤษ** สั้น ๆ ที่ตรงกับชื่อสินค้าในแคตตาล็อก (เช่น ลูกค้าถาม alginate → ["impression tray","mixing bowl","spatula"]; ถาม impression gun → ["impression material","mixing tips","tray"]) ใช้ความรู้ด้านทันตกรรม ไม่ต้องยัดเยียดและไม่ต้องพูดถึงในข้อความ draft ถ้าไม่มีของที่ใช้คู่กันชัดเจนให้เว้นว่าง []
+   ทั้งนี้ ถ้ามีรายการ "สินค้าที่เจ้าหน้าที่ต้องการแนะนำเพิ่ม" (ในส่วนข้อมูล) ให้เพิ่มประโยคเสนอ/แนะนำสินค้าเหล่านั้นแบบสุภาพเป็นธรรมชาติต่อท้ายคำตอบหลัก พร้อมบอกราคาจากรายการได้ (เช่น "นอกจากนี้ เรามี X ที่มักใช้คู่กัน ราคา Y บาท สนใจเพิ่มไหมคะ") โดยไม่ยัดเยียด
 3. ถามราคาสินค้าที่ "ไม่มี" ในรายการสินค้า → type "needs_human" ห้ามเดาตัวเลข; และเรื่อง "ของในสต็อก/คงเหลือ/พร้อมส่ง" ให้บอกว่าขอเจ้าหน้าที่เช็ก/ยืนยันให้ (เรายังไม่มีข้อมูลสต็อกสดแบบเรียลไทม์)
 4. คำถามเชิงคลินิก/การรักษา/วินิจฉัยอาการ → type "needs_human", note ว่าต้องให้ทันตแพทย์/ผู้เชี่ยวชาญตอบ
 5. ถ้าข้อมูลไม่ครอบคลุมตรง ๆ อย่าเพิ่งโยนให้เจ้าหน้าที่ — ให้ช่วยจากบริบทและข้อมูลทั่วไปของบริษัทเท่าที่ทำได้ หรือถามลูกค้ากลับเพื่อขอรายละเอียดเพิ่มเติม (type "draft"); ใช้ "out_of_scope" เฉพาะเมื่อไม่มีข้อมูลพอจะช่วยได้จริง ๆ เท่านั้น
@@ -68,6 +70,9 @@ ${renderKb(kb)}
   if (retrievedMessages) parts.push(`ข้อความเก่าที่เกี่ยวข้อง (retrieval):\n${retrievedMessages}`);
   if (products && products.length) {
     parts.push(`สินค้าที่ตรงกับคำถาม (จากแคตตาล็อก — ราคาเชื่อถือได้ ใช้ตอบได้):\n${renderProducts(products)}`);
+  }
+  if (suggestProducts && suggestProducts.length) {
+    parts.push(`สินค้าที่เจ้าหน้าที่ต้องการแนะนำเพิ่ม/เสนอขายคู่ (ให้พูดถึง+เสนอในคำตอบ):\n${renderProducts(suggestProducts)}`);
   }
   if (recentWindow) parts.push(`ข้อความล่าสุดในบทสนทนา:\n${recentWindow}`);
   parts.push(

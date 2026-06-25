@@ -151,8 +151,11 @@ export const setCategory = (customerId: string, category: string) =>
     body: JSON.stringify({ category }),
   });
 
-export const regenerateDraft = (messageId: string) =>
-  authed<{ draft: Draft }>(`/api/messages/${messageId}/draft`, { method: 'POST' });
+export const regenerateDraft = (messageId: string, suggestSkus?: string[]) =>
+  authed<{ draft: Draft }>(`/api/messages/${messageId}/draft`, {
+    method: 'POST',
+    body: JSON.stringify({ suggestSkus }),
+  });
 
 // Polish an agent's drafted reply (grammar/wording) without changing meaning/numbers.
 export const rewriteText = (text: string) =>

@@ -61,10 +61,13 @@ export async function messageRoutes(app: FastifyInstance) {
     return { uploadId: out.uploadId, kind: out.kind, fileName: parsed.data.fileName ?? 'file' };
   });
 
-  // POST /api/messages/:id/draft — (re)generate the AI draft for a customer msg.
+  // POST /api/messages/:id/draft — (re)generate the AI draft. Optional suggestSkus:
+  // cross-sell products the staff picked → the new draft mentions/offers them.
   app.post<{ Params: { id: string } }>('/api/messages/:id/draft', async (req, reply) => {
+    const sp = z.array(z.string()).max(8).safeParse((req.body as { suggestSkus?: unknown })?.suggestSkus);
+    const opts = sp.success && sp.data.length ? { suggestSkus: sp.data } : undefined;
     try {
-      const out = await generateDraftForMessage(req.params.id);
+      const out = await generateDraftForMessage(req.params.id, opts);
       pushToConsole('draft:new', {
         messageId: req.params.id,
         draft: out.draft,

@@ -2,7 +2,7 @@ import type { Draft } from '@prisma/client';
 import { prisma } from '../db/prisma.js';
 import { env } from '../env.js';
 import { buildDraftPrompt, buildImagePrompt, buildStickerPrompt } from './prompt.js';
-import { findProducts } from '../catalog/match.js';
+import { findProducts, type ProductMatch } from '../catalog/match.js';
 import { buildCrossSell } from '../catalog/crossSell.js';
 import { parseDraft, SAFE_DEFAULT, type DraftResult } from './parser.js';
 import { applyGuardrails, type SensitiveIntent } from './guardrails.js';
@@ -22,7 +22,10 @@ export interface DraftOutcome {
 // Generate (or regenerate) the AI draft for a customer message:
 // build context (KB + recent window — retrieval is M3) → Claude → parse →
 // guardrails → store Draft. Safe-defaults to needs_human on any error.
-export async function generateDraftForMessage(messageId: string): Promise<DraftOutcome> {
+export async function generateDraftForMessage(
+  messageId: string,
+  opts?: { suggestSkus?: string[] },
+): Promise<DraftOutcome> {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
   if (!message || message.role !== 'customer') {
     throw new Error('draftable customer message not found');
@@ -93,7 +96,16 @@ export async function generateDraftForMessage(messageId: string): Promise<DraftO
   // M4: find catalog products matching the question; their prices are trusted
   // grounding so the AI may quote them (still numbers-confirmed at send time).
   const products = await findProducts(questionText);
-  const groundedPriceText = products
+  // Cross-sell products the staff explicitly chose to upsell (passed on regenerate) —
+  // the draft should mention/offer these; their prices are trusted too.
+  let suggestProducts: ProductMatch[] = [];
+  if (opts?.suggestSkus?.length) {
+    const sp = await prisma.product.findMany({ where: { sku: { in: opts.suggestSkus } } });
+    suggestProducts = sp.map((p) => ({
+      sku: p.sku, nameEn: p.nameEn, nameTh: p.nameTh, price: p.price, promo: p.promo, note: p.note, photoSku: p.photoSku,
+    }));
+  }
+  const groundedPriceText = [...products, ...suggestProducts]
     .filter((p) => p.price > 0)
     .map((p) => `${p.price}บาท`)
     .join(' ');
@@ -110,6 +122,7 @@ export async function generateDraftForMessage(messageId: string): Promise<DraftO
         summary,
         retrievedMessages,
         products,
+        suggestProducts,
       });
       const raw = await callClaude(user, system);
       result = parseDraft(raw);

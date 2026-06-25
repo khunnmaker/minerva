@@ -456,10 +456,15 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
     if (!msgId || sending) return;
     setSending(true);
     setError('');
+    // Cross-sell products the staff selected → ask the AI to weave an offer for them.
+    const crossSet = new Set((detail?.crossSellCandidates ?? []).map((p) => p.sku));
+    const suggestSkus = selectedProductSkus.filter((s) => crossSet.has(s));
+    const keep = [...selectedProductSkus];
     try {
-      await regenerateDraft(msgId);
+      await regenerateDraft(msgId, suggestSkus.length ? suggestSkus : undefined);
       if (selectedId) await loadDetail(selectedId);
-      flashToast('ร่างใหม่แล้ว');
+      setSelectedProductSkus(keep); // keep the staff's photo selection after reload
+      flashToast(suggestSkus.length ? 'ร่างใหม่แล้ว — รวมการเสนอสินค้าขายคู่' : 'ร่างใหม่แล้ว');
     } catch (e) {
       setError('ร่างใหม่ไม่สำเร็จ: ' + (e as Error).message);
     } finally {

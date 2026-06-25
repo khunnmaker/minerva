@@ -32,15 +32,18 @@ const TYPE_META: Record<DraftType, { label: string; cls: string }> = {
 // shown via an object URL.
 function AuthedImage({ messageId }: { messageId: string }) {
   const [url, setUrl] = useState('');
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     let obj = '';
+    setFailed(false);
     fetch(`${API_URL}/api/messages/${messageId}/content`, { headers: { authorization: `Bearer ${getToken() ?? ''}` } })
       .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('no content'))))
       .then((b) => { obj = URL.createObjectURL(b); setUrl(obj); })
-      .catch(() => undefined);
+      .catch(() => setFailed(true));
     return () => { if (obj) URL.revokeObjectURL(obj); };
   }, [messageId]);
-  if (!url) return <span className="text-xs text-slate-400">📷 กำลังโหลดรูป…</span>;
+  if (failed) return <span className="text-xs text-slate-400">โหลดรูปไม่ได้ (รูปอาจหมดอายุ)</span>;
+  if (!url) return <span className="text-xs text-slate-400">กำลังโหลดรูป…</span>;
   return <img src={url} alt="รูปจากลูกค้า" className="max-w-[220px] max-h-[260px] rounded-lg block" />;
 }
 

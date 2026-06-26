@@ -145,10 +145,13 @@ function PhotoStrip({ direct, cross, selected, onToggle }: {
         <div className="text-[10px] mt-1 leading-tight">
           <div className="font-semibold text-teal-800 truncate">{[p.nameEn, p.nameTh].filter(Boolean).join(' / ') || p.sku}</div>
           <div className="text-teal-600">{p.price > 0 ? `${p.price.toLocaleString()} บาท` : '—'}</div>
-          {p.stock != null && (
-            <div className={'font-medium ' + (p.stock <= 0 ? 'text-rose-600' : p.stock <= 5 ? 'text-amber-600' : 'text-emerald-600')}>
-              {p.stock <= 0 ? '● หมด' : `● คงเหลือ ${p.stock.toLocaleString()}`}
+          {p.stock != null ? (
+            <div className={'mt-0.5 rounded px-1 py-0.5 text-center text-[10px] font-bold ' +
+              (p.stock <= 0 ? 'bg-rose-100 text-rose-700' : p.stock <= 5 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')}>
+              {p.stock <= 0 ? 'หมด' : `คงเหลือ ${p.stock.toLocaleString()}`}
             </div>
+          ) : (
+            <div className="mt-0.5 text-center text-[9px] text-slate-400">ไม่มีข้อมูลสต็อก</div>
           )}
         </div>
       </button>

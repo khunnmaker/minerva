@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Bot, User, LogOut, Clock, Inbox, Wifi, WifiOff, Loader2, ShieldCheck, MessageSquare,
   Send, Check, CheckCircle2, RefreshCw, Brain, GraduationCap, Wand2, Pencil, AlertTriangle, Search,
-  Download, Paperclip, X, ChevronDown, ChevronUp,
+  Download, Paperclip, Camera, X, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import {
   getQueue, getCustomers, getCustomer, searchCustomers, clearSession, regenerateDraft, rewriteText, sendReply, setNickname, setCategory,
@@ -212,6 +212,7 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
   const selectedRef = useRef<string | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const cameraRef = useRef<HTMLInputElement | null>(null);
 
   const refreshLists = useCallback(async () => {
     const [{ customers: cs }, { queue }] = await Promise.all([getCustomers(), getQueue()]);
@@ -756,7 +757,14 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                           <button type="button" onClick={() => setUpload(null)} className="text-slate-400 hover:text-rose-500"><X size={14} /></button>
                         </div>
                       )}
-                      <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr] gap-2">
+                      <div className="grid grid-cols-[auto_auto_auto_1fr_1fr_1fr] gap-2">
+                        <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden"
+                          onChange={(e) => { void onPickFile(e.target.files?.[0] ?? undefined); e.currentTarget.value = ''; }} />
+                        <button type="button" onClick={() => cameraRef.current?.click()} disabled={uploading || sending || rewriting}
+                          title="ถ่ายรูปแล้วส่ง" aria-label="ถ่ายรูปแล้วส่ง"
+                          className="px-2.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center disabled:opacity-50">
+                          {uploading ? <Loader2 size={16} className="animate-spin" /> : <Camera size={16} />}
+                        </button>
                         <input ref={fileRef} type="file" className="hidden"
                           onChange={(e) => { void onPickFile(e.target.files?.[0] ?? undefined); e.currentTarget.value = ''; }} />
                         <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading || sending || rewriting}

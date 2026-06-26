@@ -4,7 +4,7 @@ import path from 'node:path';
 import { prisma } from '../db/prisma.js';
 import { requireAuth } from '../auth/middleware.js';
 import { CATALOG_PRODUCTS } from '../catalog/catalogData.js';
-import { findProducts } from '../catalog/match.js';
+import { findProducts, searchProducts } from '../catalog/match.js';
 import { buildDraftPrompt } from '../llm/prompt.js';
 import { callClaude } from '../llm/anthropic.js';
 import { parseDraft } from '../llm/parser.js';
@@ -16,10 +16,11 @@ const SKU_RE = /^[A-Za-z0-9_-]+$/;
 export async function catalogRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requireAuth);
 
-  // GET /api/catalog/search?q= — products matching a query (debug/tuning).
+  // GET /api/catalog/search?q= — products matching a query by NAME or SKU. Powers the
+  // console's manual "add product" search (when the AI's auto-match isn't right).
   app.get('/api/catalog/search', async (req) => {
     const q = String((req.query as { q?: string }).q ?? '');
-    return { products: await findProducts(q, 8) };
+    return { products: await searchProducts(q, 12) };
   });
 
   // GET /api/catalog/crosssell/:sku — learned cross-sell links for an anchor product

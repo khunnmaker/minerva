@@ -7,7 +7,7 @@ import {
 import {
   getQueue, getCustomers, getCustomer, searchCustomers, clearSession, regenerateDraft, rewriteText, sendReply, setNickname, setCategory,
   uploadAttachment, getLearned, promoteLearned, rejectLearned, endSession, API_URL, getToken,
-  getQuickReplies, addQuickReply, deleteQuickReply, sendQuickReply, sendMessage, sendPhotoNow,
+  getQuickReplies, addQuickReply, deleteQuickReply, sendQuickReply, sendMessage, sendPhotoNow, searchCatalog, addProductToDraft,
   type Agent, type CustomerLite, type CustomerDetail, type Message, type DraftType, type LearnedAnswer, type PendingProduct, type QuickReply,
 } from './lib/api';
 import { getSocket, disconnectSocket } from './lib/socket';
@@ -285,6 +285,10 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
   const [qrSending, setQrSending] = useState(false);
   const [freeText, setFreeText] = useState('');
   const [freeSending, setFreeSending] = useState(false);
+  const [prodSearchOpen, setProdSearchOpen] = useState(false);
+  const [prodSearchQ, setProdSearchQ] = useState('');
+  const [prodSearchResults, setProdSearchResults] = useState<PendingProduct[]>([]);
+  const [prodSearching, setProdSearching] = useState(false);
   const [toast, setToast] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
   const [error, setError] = useState('');
@@ -552,6 +556,35 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
     if (touch) cameraRef.current?.click();
     else setCameraOpen(true);
   }
+
+  // Manually add a searched product to the draft (main candidate or cross-sell) and
+  // select it. The server strengthens the learning link so the AI suggests it next time.
+  async function addProduct(sku: string, role: 'main' | 'cross') {
+    const msgId = detail?.pendingMessageId;
+    if (!msgId) return;
+    try {
+      await addProductToDraft(msgId, sku, role);
+      if (selectedId) await loadDetail(selectedId); // reload to show it (preserves selection)
+      setSelectedProductSkus((prev) => (prev.includes(sku) ? prev : [...prev, sku]));
+      flashToast(role === 'main' ? 'เพิ่มเป็นสินค้าหลักแล้ว ✓' : 'เพิ่มเป็นสินค้าขายคู่แล้ว ✓');
+    } catch {
+      setError('เพิ่มสินค้าไม่สำเร็จ');
+    }
+  }
+
+  // Debounced manual product search (name or SKU).
+  useEffect(() => {
+    const q = prodSearchQ.trim();
+    if (!q) { setProdSearchResults([]); setProdSearching(false); return; }
+    setProdSearching(true);
+    const t = setTimeout(() => {
+      searchCatalog(q)
+        .then((r) => setProdSearchResults(r.products))
+        .catch(() => setProdSearchResults([]))
+        .finally(() => setProdSearching(false));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [prodSearchQ]);
   async function saveQuickReply() {
     if (!qrLabel.trim() || !qrBody.trim() || qrSaving) return;
     setQrSaving(true);
@@ -848,6 +881,46 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                           selected={selectedProductSkus}
                           onToggle={toggleProductSku}
                         />
+                      )}
+                      {detailsOpen && (
+                        <div>
+                          <button type="button" onClick={() => setProdSearchOpen((v) => !v)}
+                            className="flex items-center gap-1 text-[11px] text-teal-700 hover:text-teal-900">
+                            <Search size={12} /> ค้นหา / เพิ่มสินค้าเอง {prodSearchOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                          </button>
+                          {prodSearchOpen && (
+                            <div className="mt-1 space-y-1.5 border border-slate-200 rounded-xl p-2 bg-slate-50">
+                              <input value={prodSearchQ} onChange={(e) => setProdSearchQ(e.target.value)}
+                                placeholder="พิมพ์ชื่อสินค้า หรือ SKU…"
+                                className="w-full px-2 py-1.5 rounded-lg border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-teal-400" />
+                              {prodSearching && <div className="text-[11px] text-slate-400 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> กำลังค้นหา…</div>}
+                              <div className="max-h-56 overflow-y-auto space-y-1">
+                                {prodSearchResults.map((p) => (
+                                  <div key={p.sku} className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg p-1">
+                                    {p.photoSku
+                                      ? <img src={`${API_URL}/content/product/${p.photoSku}`} alt="" className="w-9 h-9 object-contain shrink-0 rounded bg-white"
+                                          onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} />
+                                      : <div className="w-9 h-9 shrink-0 rounded bg-slate-100 text-[8px] text-slate-400 flex items-center justify-center text-center">ไม่มีรูป</div>}
+                                    <div className="flex-1 min-w-0">
+                                      <div className="text-[11px] font-medium text-slate-800 truncate">{[p.nameEn, p.nameTh].filter(Boolean).join(' / ') || p.sku}</div>
+                                      <div className="text-[10px] text-slate-500 truncate">
+                                        {p.sku} · {p.price > 0 ? `${p.price.toLocaleString()} บาท` : '—'}
+                                        {p.stock != null && <span className={p.stock <= 0 ? 'text-rose-600' : p.stock <= 5 ? 'text-amber-600' : 'text-emerald-600'}> · {p.stock <= 0 ? 'หมด' : `คงเหลือ ${p.stock}`}</span>}
+                                      </div>
+                                    </div>
+                                    <button type="button" onClick={() => addProduct(p.sku, 'main')} title="เพิ่มเป็นสินค้าหลัก"
+                                      className="shrink-0 text-[10px] px-2 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white">หลัก</button>
+                                    <button type="button" onClick={() => addProduct(p.sku, 'cross')} title="เพิ่มเป็นสินค้าขายคู่"
+                                      className="shrink-0 text-[10px] px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white">ขายคู่</button>
+                                  </div>
+                                ))}
+                                {prodSearchQ.trim() && !prodSearching && !prodSearchResults.length && (
+                                  <div className="text-[11px] text-slate-400 px-1 py-2 text-center">ไม่พบสินค้า</div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       )}
                       <textarea value={editText} onChange={(e) => { setEditText(e.target.value); setNeedsConfirm(false); setRewriteNote(null); }} rows={3}
                         className="w-full p-3 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400 resize-none" placeholder="พิมพ์/แก้คำตอบก่อนส่ง…" />

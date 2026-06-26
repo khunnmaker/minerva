@@ -148,6 +148,20 @@ model CrossSellLink {
   @@index([anchorSku])
 }
 
+// Team-taught keyword→product links: when staff manually pick a product (via search)
+// as the MAIN answer for a customer question, that question's keywords are strengthened
+// against the product so findProducts surfaces it for similar questions next time.
+model ProductKeyword {
+  id        String   @id @default(cuid())
+  sku       String
+  keyword   String // a normalized token from a customer question
+  score     Int      @default(1)
+  updatedAt DateTime @updatedAt
+
+  @@unique([sku, keyword])
+  @@index([keyword])
+}
+
 // Staff quick-reply templates — canned messages (address, hours, payment, catalog,
 // shipping…) the team inserts with one click. Editable in the console.
 model QuickReply {

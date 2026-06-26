@@ -13,6 +13,7 @@ import { readImageContent } from '../line/contentStore.js';
 import { PRODUCT_PHOTO_DIR } from './content.js';
 import { saveStaffUpload, readStaffUploadMeta, UPLOAD_ID_RE } from '../line/staffUploads.js';
 import { recordCrossSellOutcome } from '../catalog/crossSell.js';
+import { recordProductKeywords } from '../catalog/match.js';
 import { pushToConsole } from '../ws/io.js';
 
 const replyBody = z.object({
@@ -77,6 +78,35 @@ export async function messageRoutes(app: FastifyInstance) {
     } catch {
       return reply.code(404).send({ error: 'not_found' });
     }
+  });
+
+  // POST /api/messages/:id/add-product — manually add a searched product to the draft's
+  // picker as a main candidate (role 'main') or a cross-sell (role 'cross'), and STRENGTHEN
+  // the learning link so the AI suggests it for similar questions next time:
+  //   main  → keyword↔product (recordProductKeywords → boosts findProducts)
+  //   cross → main↔cross link (recordCrossSellOutcome → boosts buildCrossSell)
+  app.post<{ Params: { id: string } }>('/api/messages/:id/add-product', async (req, reply) => {
+    const parsed = z.object({ sku: z.string().min(1).max(40), role: z.enum(['main', 'cross']) }).safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
+    const { sku, role } = parsed.data;
+    const customerMsg = await prisma.message.findUnique({ where: { id: req.params.id } });
+    if (!customerMsg || customerMsg.role !== 'customer') return reply.code(404).send({ error: 'not_found' });
+    const product = await prisma.product.findUnique({ where: { sku } });
+    if (!product) return reply.code(404).send({ error: 'product_not_found' });
+    const draft = await prisma.draft.findUnique({ where: { messageId: customerMsg.id } });
+    if (!draft) return reply.code(404).send({ error: 'no_draft' });
+
+    if (role === 'main') {
+      const next = draft.candidateSkus.includes(sku) ? draft.candidateSkus : [...draft.candidateSkus, sku];
+      await prisma.draft.update({ where: { messageId: customerMsg.id }, data: { candidateSkus: next } });
+      await recordProductKeywords(sku, customerMsg.text).catch(() => undefined);
+    } else {
+      const next = draft.crossSellSkus.includes(sku) ? draft.crossSellSkus : [...draft.crossSellSkus, sku];
+      await prisma.draft.update({ where: { messageId: customerMsg.id }, data: { crossSellSkus: next } });
+      const anchorSku = draft.productSku ?? draft.candidateSkus[0] ?? null;
+      if (anchorSku) await recordCrossSellOutcome(anchorSku, [sku], [sku]).catch(() => undefined);
+    }
+    return { ok: true, sku, role };
   });
 
   // POST /api/messages/:id/reply — approve & send a reply to the customer.

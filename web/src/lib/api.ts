@@ -159,6 +159,17 @@ export const regenerateDraft = (messageId: string, suggestSkus?: string[]) =>
     body: JSON.stringify({ suggestSkus }),
   });
 
+// Manual catalog search by NAME or SKU — for the "add product yourself" picker.
+export const searchCatalog = (q: string) =>
+  authed<{ products: PendingProduct[] }>(`/api/catalog/search?q=${encodeURIComponent(q)}`);
+
+// Add a searched product to the draft as a main candidate or cross-sell (+ learns the link).
+export const addProductToDraft = (messageId: string, sku: string, role: 'main' | 'cross') =>
+  authed<{ ok: boolean; sku: string; role: string }>(`/api/messages/${messageId}/add-product`, {
+    method: 'POST',
+    body: JSON.stringify({ sku, role }),
+  });
+
 // Polish an agent's drafted reply (grammar/wording) without changing meaning/numbers.
 export const rewriteText = (text: string) =>
   authed<{ text: string; note: string | null }>('/api/rewrite', { method: 'POST', body: JSON.stringify({ text }) });

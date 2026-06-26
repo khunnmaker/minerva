@@ -2,12 +2,12 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Bot, User, LogOut, Clock, Inbox, Wifi, WifiOff, Loader2, ShieldCheck, MessageSquare,
   Send, Check, CheckCircle2, RefreshCw, Brain, GraduationCap, Wand2, Pencil, AlertTriangle, Search,
-  Download, Paperclip, Camera, X, ChevronDown, ChevronUp,
+  Download, Paperclip, Camera, Banknote, X, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import {
   getQueue, getCustomers, getCustomer, searchCustomers, clearSession, regenerateDraft, rewriteText, sendReply, setNickname, setCategory, setStage, STAGES,
   uploadAttachment, getLearned, promoteLearned, rejectLearned, endSession, API_URL, getToken,
-  getQuickReplies, addQuickReply, deleteQuickReply, sendQuickReply, sendMessage, sendPhotoNow, searchCatalog, addProductToDraft,
+  getQuickReplies, addQuickReply, deleteQuickReply, sendQuickReply, sendMessage, sendPhotoNow, searchCatalog, addProductToDraft, readSlip, sendToFinance,
   type Agent, type CustomerLite, type CustomerDetail, type Message, type LearnedAnswer, type PendingProduct, type QuickReply,
 } from './lib/api';
 import { getSocket, disconnectSocket } from './lib/socket';
@@ -246,6 +246,67 @@ function CameraCapture({ onCapture, onClose }: { onCapture: (file: File) => void
   );
 }
 
+// "แจ้งการเงิน" — confirm a payment slip's details (AI-prefilled, staff-editable) then
+// forward them to the finance Google Sheet.
+function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClose: () => void; onSent: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [err, setErr] = useState('');
+  const [f, setF] = useState({ nickname: '', realName: '', amount: '', bank: '', transferAt: '', ref: '' });
+
+  useEffect(() => {
+    let cancelled = false;
+    readSlip(messageId)
+      .then((r) => { if (!cancelled) setF((p) => ({ ...p, ...r })); })
+      .catch(() => undefined)
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [messageId]);
+
+  async function send() {
+    if (sending || !f.amount.trim()) return;
+    setSending(true); setErr('');
+    try {
+      const res = await sendToFinance(messageId, { amount: f.amount, bank: f.bank, transferAt: f.transferAt, ref: f.ref });
+      if (!res.ok) { setErr('ส่งให้การเงินไม่สำเร็จ: ' + (res.error ?? '')); return; }
+      onSent();
+    } catch { setErr('ส่งให้การเงินไม่สำเร็จ'); } finally { setSending(false); }
+  }
+
+  const field = (label: string, key: keyof typeof f, ph: string, readOnly = false) => (
+    <label className="block">
+      <span className="text-[11px] text-slate-500">{label}</span>
+      <input value={f[key]} readOnly={readOnly} onChange={(e) => setF({ ...f, [key]: e.target.value })} placeholder={ph}
+        className={'w-full mt-0.5 px-2 py-1.5 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 ' + (readOnly ? 'bg-slate-50 border-slate-200 text-slate-500' : 'border-slate-300')} />
+    </label>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-4 w-full max-w-sm space-y-2.5" onClick={(e) => e.stopPropagation()}>
+        <div className="font-semibold text-slate-800 flex items-center gap-1.5"><Banknote size={17} className="text-amber-600" /> แจ้งการเงิน</div>
+        {loading && <div className="text-xs text-slate-400 flex items-center gap-1"><Loader2 size={13} className="animate-spin" /> กำลังอ่านสลิป…</div>}
+        <div className="grid grid-cols-2 gap-2">
+          {field('ชื่อเล่น', 'nickname', '', true)}
+          {field('ชื่อ / LINE', 'realName', '', true)}
+          {field('จำนวนเงิน', 'amount', 'เช่น 1500')}
+          {field('บัญชีที่รับเงิน', 'bank', 'กสิกร / ไทยพาณิชย์')}
+          {field('วันเวลาโอน', 'transferAt', '27/06/2026 14:30')}
+          {field('เลขอ้างอิง', 'ref', '')}
+        </div>
+        {err && <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-2">{err}</div>}
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-sm">ยกเลิก</button>
+          <button type="button" onClick={send} disabled={sending || !f.amount.trim()}
+            className="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold flex items-center gap-1 disabled:opacity-50">
+            {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={13} />} ส่งให้การเงิน
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Console({ agent, onLogout }: { agent: Agent; onLogout: () => void }) {
   const [view, setView] = useState<'console' | 'learning'>('console');
   const [customers, setCustomers] = useState<CustomerLite[]>([]);
@@ -287,6 +348,7 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
   const [prodSearching, setProdSearching] = useState(false);
   const [toast, setToast] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [financeMsg, setFinanceMsg] = useState<string | null>(null);
   const [error, setError] = useState('');
 
   const [learned, setLearned] = useState<LearnedAnswer[]>([]);
@@ -699,6 +761,17 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
     <div className="min-h-screen bg-slate-100 p-3 sm:p-5 font-sans text-slate-800">
       <div className="max-w-6xl mx-auto">
         {toast && <div className="mb-3 text-sm bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl px-3 py-2 flex items-center gap-2"><Check size={15} /> {toast}</div>}
+        {financeMsg && (
+          <FinanceModal
+            messageId={financeMsg}
+            onClose={() => setFinanceMsg(null)}
+            onSent={() => {
+              setDetail((d) => (d ? { ...d, messages: d.messages.map((m) => (m.id === financeMsg ? { ...m, financeSentAt: new Date().toISOString() } : m)) } : d));
+              setFinanceMsg(null);
+              flashToast('ส่งให้การเงินแล้ว ✓');
+            }}
+          />
+        )}
         <div className="grid md:grid-cols-[300px_1fr] gap-4 h-[calc(100vh-2.5rem)]">
           {/* LEFT: icon bar (top) + queue (bottom) */}
           <div className="flex flex-col gap-3 min-h-0">
@@ -902,6 +975,14 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                           (m.role === 'customer' ? 'bg-white border border-slate-200 rounded-tl-sm' : 'bg-teal-600 text-white rounded-tr-sm')}>
                           <MessageBody m={m} />
                           <div className={'text-[10px] mt-0.5 ' + (m.role === 'customer' ? 'text-slate-400' : 'text-teal-100')}>{fmtTime(m.createdAt)}</div>
+                          {m.role === 'customer' && m.attachmentType === 'image' && (
+                            m.financeSentAt
+                              ? <div className="mt-1 text-[10px] text-emerald-600 font-medium flex items-center gap-1"><CheckCircle2 size={11} /> ส่งการเงินแล้ว</div>
+                              : <button type="button" onClick={() => setFinanceMsg(m.id)}
+                                  className="mt-1 text-[10px] px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 font-medium flex items-center gap-1">
+                                  <Banknote size={12} /> แจ้งการเงิน
+                                </button>
+                          )}
                         </div>
                       </div>
                     ))}

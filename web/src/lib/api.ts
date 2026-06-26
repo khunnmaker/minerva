@@ -22,6 +22,7 @@ export interface Message {
   attachmentType: string | null; // image | sticker | video | audio | file | location | product
   attachmentRef: string | null;
   attachmentName: string | null; // original filename for received files
+  financeSentAt: string | null; // when a slip was forwarded to finance
   createdAt: string;
 }
 export interface CustomerLite {
@@ -268,6 +269,29 @@ export async function sendMessage(
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json() as Promise<{ message: Message; dryRun: boolean }>;
+}
+
+export interface SlipReadResult { nickname: string; realName: string; amount: string; bank: string; transferAt: string; ref: string }
+// OCR a customer's payment slip → pre-fill fields (best-effort; blanks if no LLM credits).
+export const readSlip = (messageId: string) =>
+  authed<SlipReadResult>(`/api/messages/${messageId}/read-slip`, { method: 'POST' });
+
+// Forward the confirmed slip details to the finance Google Sheet + mark it sent.
+export async function sendToFinance(
+  messageId: string,
+  fields: { amount: string; bank: string; transferAt: string; ref: string },
+): Promise<{ ok: boolean; error?: string; financeSentAt?: string }> {
+  const token = getToken();
+  const res = await fetch(`${API_URL}/api/messages/${messageId}/to-finance`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify(fields),
+  });
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { detail?: string; error?: string };
+    return { ok: false, error: e.detail || e.error || `HTTP ${res.status}` };
+  }
+  return res.json() as Promise<{ ok: boolean; financeSentAt?: string }>;
 }
 
 export const getLearned = (status = 'pending') =>

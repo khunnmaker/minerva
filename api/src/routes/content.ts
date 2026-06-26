@@ -1,8 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { UPLOAD_DIR } from '../line/contentStore.js';
+import { prisma } from '../db/prisma.js';
+import { UPLOAD_DIR, readImageContent } from '../line/contentStore.js';
 import { readStaffUploadMeta, readStaffUploadFile } from '../line/staffUploads.js';
+import { slipToken } from '../finance/slipLink.js';
 
 // SKU path segment whitelist — blocks path traversal on the public route.
 const SKU_RE = /^[A-Za-z0-9_-]+$/;
@@ -38,5 +40,20 @@ export async function contentRoutes(app: FastifyInstance) {
       reply.header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(meta.fileName)}`);
     }
     return reply.send(buf);
+  });
+
+  // PUBLIC (tokenized) — a customer's payment-slip image, linkable from the finance
+  // Google Sheet so finance can open it without a console login. The token is an HMAC
+  // of the message id (unguessable); only image messages are served.
+  app.get<{ Params: { id: string }; Querystring: { t?: string } }>('/content/slip/:id', async (req, reply) => {
+    if (!req.query.t || req.query.t !== slipToken(req.params.id)) return reply.code(403).send({ error: 'forbidden' });
+    const msg = await prisma.message.findUnique({ where: { id: req.params.id } });
+    if (!msg || msg.attachmentType !== 'image') return reply.code(404).send({ error: 'not_found' });
+    const buf = await readImageContent(req.params.id);
+    if (!buf) return reply.code(404).send({ error: 'content_unavailable' });
+    return reply
+      .header('content-type', msg.attachmentRef || 'image/jpeg')
+      .header('cache-control', 'private, max-age=3600')
+      .send(buf);
   });
 }

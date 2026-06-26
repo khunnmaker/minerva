@@ -14,6 +14,9 @@ import { PRODUCT_PHOTO_DIR } from './content.js';
 import { saveStaffUpload, readStaffUploadMeta, UPLOAD_ID_RE } from '../line/staffUploads.js';
 import { recordCrossSellOutcome } from '../catalog/crossSell.js';
 import { recordProductKeywords } from '../catalog/match.js';
+import { readSlip } from '../llm/readSlip.js';
+import { sendToFinance } from '../finance/sendToFinance.js';
+import { buildSlipUrl } from '../finance/slipLink.js';
 import { pushToConsole } from '../ws/io.js';
 
 const replyBody = z.object({
@@ -110,6 +113,53 @@ export async function messageRoutes(app: FastifyInstance) {
       if (anchorSku) await recordCrossSellOutcome(anchorSku, [sku], [sku]).catch(() => undefined);
     }
     return { ok: true, sku, role };
+  });
+
+  // POST /api/messages/:id/read-slip — OCR a customer's payment-slip image into
+  // {amount, bank, transferAt, ref} to pre-fill the "แจ้งการเงิน" card (best-effort;
+  // empty fields when the LLM is unavailable). Also returns the customer's names.
+  app.post<{ Params: { id: string } }>('/api/messages/:id/read-slip', async (req, reply) => {
+    const msg = await prisma.message.findUnique({ where: { id: req.params.id } });
+    if (!msg || msg.attachmentType !== 'image') return reply.code(404).send({ error: 'not_an_image' });
+    const customer = await prisma.customer.findUnique({ where: { id: msg.customerId } });
+    const fields = await readSlip(msg.id, msg.attachmentRef || 'image/jpeg');
+    return {
+      ...fields,
+      nickname: customer?.nickname ?? customer?.displayName ?? '',
+      realName: customer?.displayName ?? '',
+    };
+  });
+
+  // POST /api/messages/:id/to-finance — forward the (staff-confirmed) slip details to
+  // the finance Google Sheet, with a tokenized link to the slip, and mark it sent.
+  app.post<{ Params: { id: string } }>('/api/messages/:id/to-finance', async (req, reply) => {
+    const parsed = z.object({
+      amount: z.string().max(40).optional(),
+      bank: z.string().max(120).optional(),
+      transferAt: z.string().max(60).optional(),
+      ref: z.string().max(80).optional(),
+    }).safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
+    const msg = await prisma.message.findUnique({ where: { id: req.params.id } });
+    if (!msg || msg.attachmentType !== 'image') return reply.code(404).send({ error: 'not_an_image' });
+    const customer = await prisma.customer.findUnique({ where: { id: msg.customerId } });
+    if (!customer) return reply.code(404).send({ error: 'customer_not_found' });
+
+    const base = `${(req.headers['x-forwarded-proto'] as string) || req.protocol}://${req.headers.host}`;
+    const result = await sendToFinance({
+      nickname: customer.nickname ?? customer.displayName ?? '',
+      realName: customer.displayName ?? '',
+      amount: parsed.data.amount ?? '',
+      bank: parsed.data.bank ?? '',
+      transferAt: parsed.data.transferAt ?? '',
+      ref: parsed.data.ref ?? '',
+      slipUrl: buildSlipUrl(base, msg.id),
+      sales: req.agent?.name ?? '',
+    });
+    if (!result.ok) return reply.code(502).send({ error: 'finance_send_failed', detail: result.error });
+
+    const updated = await prisma.message.update({ where: { id: msg.id }, data: { financeSentAt: new Date() } });
+    return { ok: true, financeSentAt: updated.financeSentAt };
   });
 
   // POST /api/messages/:id/reply — approve & send a reply to the customer.

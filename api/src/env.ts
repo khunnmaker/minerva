@@ -30,6 +30,10 @@ const schema = z.object({
   // Where customer images are stored. In prod set this to a mounted persistent
   // volume path (e.g. /data); defaults to ./uploads for local dev.
   UPLOAD_DIR: z.string().default(''),
+
+  // Finance "แจ้งการเงิน" → Google Sheet via an Apps Script web-app webhook + shared secret.
+  FINANCE_SHEET_WEBHOOK: z.string().default(''),
+  FINANCE_SHEET_SECRET: z.string().default(''),
 });
 
 const parsed = schema.safeParse(process.env);

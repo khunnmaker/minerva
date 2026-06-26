@@ -6,6 +6,7 @@ import { findProducts, type ProductMatch } from '../catalog/match.js';
 import { buildCrossSell } from '../catalog/crossSell.js';
 import { parseDraft, SAFE_DEFAULT, type DraftResult } from './parser.js';
 import { applyGuardrails, type SensitiveIntent } from './guardrails.js';
+import { isStage } from '../stages.js';
 import { callClaude, callClaudeWithImage, llmAvailable } from './anthropic.js';
 import { readImageContent } from '../line/contentStore.js';
 import { embeddingsAvailable, embedMessage, embedOne, retrieveSimilarMessages } from '../memory/embeddings.js';
@@ -120,6 +121,9 @@ export async function generateDraftForMessage(
   // availability (in/out) without it being treated as an ungrounded stock claim.
   const groundedStock = [...products, ...suggestProducts, ...confirmedProducts].some((p) => p.stock != null);
 
+  const customerRec = await prisma.customer.findUnique({ where: { id: message.customerId }, select: { stage: true } });
+  const currentStage = customerRec?.stage ?? null;
+
   let result: DraftResult;
   try {
     if (!llmAvailable()) {
@@ -134,6 +138,7 @@ export async function generateDraftForMessage(
         products,
         suggestProducts,
         confirmedProducts,
+        currentStage,
       });
       const raw = await callClaude(user, system);
       result = parseDraft(raw);
@@ -206,6 +211,14 @@ export async function generateDraftForMessage(
       crossSellSkus,
     },
   });
+
+  // Stage suggestion: when the AI infers a stage that differs from the confirmed one,
+  // surface it for staff to accept (never auto-apply). Clears the suggestion if it matches.
+  if (isStage(result.stage)) {
+    await prisma.customer
+      .update({ where: { id: message.customerId }, data: { suggestedStage: result.stage !== currentStage ? result.stage : null } })
+      .catch(() => undefined);
+  }
 
   return { draft, result: guarded.result, guardrailReason: guarded.reason };
 }

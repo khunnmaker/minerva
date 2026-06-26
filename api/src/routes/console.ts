@@ -5,6 +5,7 @@ import { requireAuth } from '../auth/middleware.js';
 import { endSession } from '../memory/summarize.js';
 import { sendLineText, sendLineImages, sendLineReply } from '../line/send.js';
 import { readStaffUploadMeta, UPLOAD_ID_RE } from '../line/staffUploads.js';
+import { isStage } from '../stages.js';
 import { pushToConsole } from '../ws/io.js';
 
 const RECENT_MESSAGES = 50;
@@ -33,6 +34,8 @@ export async function consoleRoutes(app: FastifyInstance) {
           displayName: c.displayName,
           nickname: c.nickname,
           category: c.category,
+          stage: c.stage,
+          suggestedStage: c.suggestedStage,
           lastSeen: c.lastSeen,
         },
         lastMessage: c.messages[0],
@@ -46,7 +49,7 @@ export async function consoleRoutes(app: FastifyInstance) {
     const customers = await prisma.customer.findMany({
       where: { active: true },
       orderBy: { lastSeen: 'desc' },
-      select: { id: true, lineUserId: true, displayName: true, nickname: true, category: true, firstSeen: true, lastSeen: true },
+      select: { id: true, lineUserId: true, displayName: true, nickname: true, category: true, stage: true, suggestedStage: true, firstSeen: true, lastSeen: true },
     });
     return { customers };
   });
@@ -67,7 +70,7 @@ export async function consoleRoutes(app: FastifyInstance) {
       },
       orderBy: { lastSeen: 'desc' },
       take: 30,
-      select: { id: true, lineUserId: true, displayName: true, nickname: true, category: true, firstSeen: true, lastSeen: true },
+      select: { id: true, lineUserId: true, displayName: true, nickname: true, category: true, stage: true, suggestedStage: true, firstSeen: true, lastSeen: true },
     });
     return { customers };
   });
@@ -207,6 +210,20 @@ export async function consoleRoutes(app: FastifyInstance) {
     if (!customer) return reply.code(404).send({ error: 'not_found' });
     pushToConsole('conversation:update', { customerId: req.params.id });
     return { ok: true, category };
+  });
+
+  // POST /api/customers/:id/stage — set/clear the sales-pipeline stage. Accepting a value
+  // also clears the AI's pending suggestion. Empty string clears the stage.
+  app.post<{ Params: { id: string } }>('/api/customers/:id/stage', async (req, reply) => {
+    const raw = (req.body as { stage?: unknown })?.stage;
+    const stage = typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+    if (stage !== null && !isStage(stage)) return reply.code(400).send({ error: 'invalid_stage' });
+    const customer = await prisma.customer
+      .update({ where: { id: req.params.id }, data: { stage, suggestedStage: null } })
+      .catch(() => null);
+    if (!customer) return reply.code(404).send({ error: 'not_found' });
+    pushToConsole('conversation:update', { customerId: req.params.id });
+    return { ok: true, stage };
   });
 
   // POST /api/customers/:id/quick-reply — send a saved quick-reply template to the

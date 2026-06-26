@@ -6,6 +6,7 @@ export interface DraftResult {
   used_kb: string[];
   used_products?: string[]; // catalog SKUs the draft drew on (for attaching the photo)
   cross_sell_terms?: string[]; // complementary product types to look up in the catalog
+  stage?: string; // AI's guess of the customer's pipeline stage (validated in draft.ts)
   note: string;
 }
 
@@ -43,7 +44,9 @@ export function parseDraft(raw: string): DraftResult {
       ? obj.cross_sell_terms.filter((x): x is string => typeof x === 'string').slice(0, 6)
       : [];
 
-    return { type, draft, used_kb, used_products, cross_sell_terms, note };
+    const stage = typeof obj.stage === 'string' ? obj.stage : undefined;
+
+    return { type, draft, used_kb, used_products, cross_sell_terms, stage, note };
   } catch {
     return SAFE_DEFAULT;
   }

@@ -57,7 +57,7 @@ export async function catalogRoutes(app: FastifyInstance) {
       parsed.used_kb.map((s) => s.toLowerCase()).includes(k.id.toLowerCase()),
     );
     const guarded = applyGuardrails(parsed, q, citedKb, grounded, groundedStock);
-    return { matched: products, confirmed: confirmedProducts, result: guarded.result, reason: guarded.reason };
+    return { matched: products, confirmed: confirmedProducts, result: guarded.result, reason: guarded.reason, stage: parsed.stage };
   });
 
   // Quick health/visibility of the imported catalog.

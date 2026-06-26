@@ -30,9 +30,14 @@ export interface CustomerLite {
   displayName: string | null;
   nickname: string | null;
   category: string | null;
+  stage: string | null;
+  suggestedStage: string | null;
   firstSeen?: string;
   lastSeen: string;
 }
+
+// Sales-pipeline stages (mirror of api/src/stages.ts). AI suggests, staff confirm.
+export const STAGES = ['สอบถาม', 'สั่งซื้อ', 'รอชำระเงิน', 'จัดส่ง', 'หลังการขาย', 'ยกเลิก'];
 export interface QueueItem {
   customer: CustomerLite;
   lastMessage: Message;
@@ -151,6 +156,13 @@ export const setCategory = (customerId: string, category: string) =>
   authed<{ ok: boolean; category: string | null }>(`/api/customers/${customerId}/category`, {
     method: 'POST',
     body: JSON.stringify({ category }),
+  });
+
+// Set/clear the sales-pipeline stage (also clears the AI's pending suggestion). '' clears.
+export const setStage = (customerId: string, stage: string) =>
+  authed<{ ok: boolean; stage: string | null }>(`/api/customers/${customerId}/stage`, {
+    method: 'POST',
+    body: JSON.stringify({ stage }),
   });
 
 export const regenerateDraft = (messageId: string, suggestSkus?: string[], mainSkus?: string[]) =>

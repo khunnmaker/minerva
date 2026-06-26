@@ -5,7 +5,7 @@ import {
   Download, Paperclip, Camera, X, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import {
-  getQueue, getCustomers, getCustomer, searchCustomers, clearSession, regenerateDraft, rewriteText, sendReply, setNickname, setCategory,
+  getQueue, getCustomers, getCustomer, searchCustomers, clearSession, regenerateDraft, rewriteText, sendReply, setNickname, setCategory, setStage, STAGES,
   uploadAttachment, getLearned, promoteLearned, rejectLearned, endSession, API_URL, getToken,
   getQuickReplies, addQuickReply, deleteQuickReply, sendQuickReply, sendMessage, sendPhotoNow, searchCatalog, addProductToDraft,
   type Agent, type CustomerLite, type CustomerDetail, type Message, type DraftType, type LearnedAnswer, type PendingProduct, type QuickReply,
@@ -270,6 +270,8 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
   const [searchResults, setSearchResults] = useState<CustomerLite[] | null>(null);
   const [categoryFilters, setCategoryFilters] = useState<string[]>([]);
   const [catOpen, setCatOpen] = useState(false);
+  const [stageFilters, setStageFilters] = useState<string[]>([]);
+  const [stageOpen, setStageOpen] = useState(false);
   const [ending, setEnding] = useState(false);
   const [needsConfirm, setNeedsConfirm] = useState(false);
   const [selectedProductSkus, setSelectedProductSkus] = useState<string[]>([]);
@@ -653,6 +655,18 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
     }
   }
 
+  async function chooseStage(stage: string) {
+    if (!selectedId) return;
+    setStageOpen(false);
+    try {
+      await setStage(selectedId, stage);
+      setDetail((d) => (d ? { ...d, customer: { ...d.customer, stage: stage || null, suggestedStage: null } } : d));
+      await refreshLists();
+    } catch {
+      setError('ตั้งขั้นตอนไม่สำเร็จ');
+    }
+  }
+
   async function endChat() {
     if (!selectedId || ending) return;
     setEnding(true);
@@ -680,7 +694,10 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
   }
 
   const draft = detail?.pendingDraft ?? null;
-  const displayList = searchResults ?? customers.filter((c) => categoryFilters.length === 0 || (c.category != null && categoryFilters.includes(c.category)));
+  const displayList = searchResults ?? customers.filter((c) =>
+    (categoryFilters.length === 0 || (c.category != null && categoryFilters.includes(c.category))) &&
+    (stageFilters.length === 0 || (c.stage != null && stageFilters.includes(c.stage))),
+  );
 
   return (
     <div className="min-h-screen bg-slate-100 p-3 sm:p-5 font-sans text-slate-800">
@@ -736,6 +753,18 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                   </button>
                 ))}
               </div>
+              <div className="px-2 pb-1 shrink-0 flex flex-wrap gap-1">
+                <button onClick={() => setStageFilters([])}
+                  className={'text-[10px] px-1.5 py-0.5 rounded-full border ' + (stageFilters.length === 0 ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50')}>
+                  ทุกขั้นตอน
+                </button>
+                {STAGES.map((st) => (
+                  <button key={st} onClick={() => setStageFilters((fs) => (fs.includes(st) ? fs.filter((f) => f !== st) : [...fs, st]))}
+                    className={'text-[10px] px-1.5 py-0.5 rounded-full border ' + (stageFilters.includes(st) ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50')}>
+                    {st}
+                  </button>
+                ))}
+              </div>
               <div className="flex-1 overflow-y-auto p-2 space-y-1">
                 {searchResults !== null && searchResults.length > 0 && (
                   <div className="px-1 pb-1 text-[11px] text-slate-400">ผลค้นหา {searchResults.length} ราย (รวมแชทที่จบแล้ว)</div>
@@ -759,7 +788,11 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                           <div className="flex items-center gap-1">
                             <span className="font-medium text-sm truncate">{nameOf(c)}</span>
                             {waiting && <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" title="รอตอบ" />}
-                            {c.category && <span className="text-[9px] px-1 py-0.5 rounded bg-teal-100 text-teal-700 shrink-0 ml-auto">{c.category}</span>}
+                            <span className="ml-auto flex items-center gap-1 shrink-0">
+                              {c.suggestedStage && c.suggestedStage !== c.stage && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title={'AI แนะนำ: ' + c.suggestedStage} />}
+                              {c.stage && <span className="text-[9px] px-1 py-0.5 rounded bg-indigo-100 text-indigo-700">{c.stage}</span>}
+                              {c.category && <span className="text-[9px] px-1 py-0.5 rounded bg-teal-100 text-teal-700">{c.category}</span>}
+                            </span>
                           </div>
                           <div className="text-[11px] text-slate-400 flex items-center gap-1"><Clock size={10} /> {fmtTime(c.lastSeen)}</div>
                         </div>
@@ -811,6 +844,36 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                             </>
                           )}
                         </div>
+                      )}
+                      {detail && (
+                        <div className="relative shrink-0">
+                          <button type="button" onClick={() => setStageOpen((v) => !v)}
+                            className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-white/20 hover:bg-white/30 text-white flex items-center gap-0.5">
+                            {detail.customer.stage || 'ขั้นตอน'} <ChevronDown size={10} />
+                          </button>
+                          {stageOpen && (
+                            <>
+                              <div className="fixed inset-0 z-20" onClick={() => setStageOpen(false)} />
+                              <div className="absolute top-full mt-1 left-0 z-30 w-28 bg-white border border-slate-200 rounded-lg shadow-lg p-1 text-slate-700">
+                                {STAGES.map((st) => (
+                                  <button key={st} type="button" onClick={() => chooseStage(st)}
+                                    className={'w-full text-left text-xs px-2 py-1 rounded hover:bg-indigo-50 ' + (detail.customer.stage === st ? 'bg-indigo-50 font-semibold' : '')}>
+                                    {st}
+                                  </button>
+                                ))}
+                                <button type="button" onClick={() => chooseStage('')}
+                                  className="w-full text-left text-xs px-2 py-1 rounded hover:bg-slate-50 text-slate-400">ไม่ระบุ</button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                      {detail && detail.customer.suggestedStage && detail.customer.suggestedStage !== detail.customer.stage && (
+                        <button type="button" onClick={() => chooseStage(detail.customer.suggestedStage!)}
+                          title="AI แนะนำขั้นตอนนี้จากบทสนทนา — กดเพื่อยืนยัน"
+                          className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-300 hover:bg-amber-200 text-amber-900 flex items-center gap-0.5 shrink-0">
+                          💡 {detail.customer.suggestedStage} ✓
+                        </button>
                       )}
                       {detail && <span className="text-[11px] font-normal text-green-100 truncate min-w-0">· {detail.customer.lineUserId}</span>}
                       {detail && <span className="text-[11px] font-normal text-green-100 shrink-0">· ถาม {detail.stats.questions} · ตอบ {detail.stats.replies}</span>}

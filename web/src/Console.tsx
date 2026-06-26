@@ -868,9 +868,14 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                       <div className="flex items-start gap-2">
                         <span className={'shrink-0 text-xs font-semibold px-2 py-1 rounded-full border ' + TYPE_META[draft.type].cls}>{TYPE_META[draft.type].label}</span>
                         {draft.note && detailsOpen && <span className="text-xs text-slate-500 leading-relaxed pt-1">{draft.note}</span>}
+                        <button type="button" onClick={() => setProdSearchOpen((v) => !v)}
+                          title="ค้นหา / เพิ่มสินค้าเอง" aria-label="ค้นหา / เพิ่มสินค้าเอง"
+                          className={'ml-auto shrink-0 p-1 rounded-lg hover:bg-slate-100 ' + (prodSearchOpen ? 'text-teal-600 bg-teal-50' : 'text-slate-400 hover:text-slate-600')}>
+                          <Search size={16} />
+                        </button>
                         <button type="button" onClick={() => setDetailsOpen((v) => !v)}
                           title={detailsOpen ? 'ซ่อนรายละเอียด (ดูบทสนทนามากขึ้น)' : 'แสดงรายละเอียด'}
-                          className="ml-auto shrink-0 p-1 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+                          className="shrink-0 p-1 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600">
                           {detailsOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
                         </button>
                       </div>
@@ -882,14 +887,8 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                           onToggle={toggleProductSku}
                         />
                       )}
-                      {detailsOpen && (
-                        <div>
-                          <button type="button" onClick={() => setProdSearchOpen((v) => !v)}
-                            className="flex items-center gap-1 text-[11px] text-teal-700 hover:text-teal-900">
-                            <Search size={12} /> ค้นหา / เพิ่มสินค้าเอง {prodSearchOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                          </button>
-                          {prodSearchOpen && (
-                            <div className="mt-1 space-y-1.5 border border-slate-200 rounded-xl p-2 bg-slate-50">
+                      {prodSearchOpen && (
+                            <div className="space-y-1.5 border border-slate-200 rounded-xl p-2 bg-slate-50">
                               <input value={prodSearchQ} onChange={(e) => setProdSearchQ(e.target.value)}
                                 placeholder="พิมพ์ชื่อสินค้า หรือ SKU…"
                                 className="w-full px-2 py-1.5 rounded-lg border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-teal-400" />
@@ -919,8 +918,6 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                                 )}
                               </div>
                             </div>
-                          )}
-                        </div>
                       )}
                       <textarea value={editText} onChange={(e) => { setEditText(e.target.value); setNeedsConfirm(false); setRewriteNote(null); }} rows={3}
                         className="w-full p-3 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400 resize-none" placeholder="พิมพ์/แก้คำตอบก่อนส่ง…" />

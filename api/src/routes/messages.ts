@@ -15,7 +15,7 @@ import { saveStaffUpload, readStaffUploadMeta, UPLOAD_ID_RE } from '../line/staf
 import { recordCrossSellOutcome } from '../catalog/crossSell.js';
 import { recordProductKeywords } from '../catalog/match.js';
 import { readSlip } from '../llm/readSlip.js';
-import { sendToFinance } from '../finance/sendToFinance.js';
+import { sendToFinance, sendFinanceAudit } from '../finance/sendToFinance.js';
 import { buildSlipUrl } from '../finance/slipLink.js';
 import { normalizeSlipDate, normalizeAmount } from '../finance/normalize.js';
 import { pushToConsole } from '../ws/io.js';
@@ -124,6 +124,8 @@ export async function messageRoutes(app: FastifyInstance) {
     if (!msg || msg.attachmentType !== 'image') return reply.code(404).send({ error: 'not_an_image' });
     const customer = await prisma.customer.findUnique({ where: { id: msg.customerId } });
     const fields = await readSlip(msg.id, msg.attachmentRef || 'image/jpeg');
+    // Store the OCR amount server-side (tamper-proof) for the corrected-amount audit.
+    if (fields.amount) await prisma.message.update({ where: { id: msg.id }, data: { slipAmount: fields.amount } }).catch(() => undefined);
     return {
       amount: fields.amount, bank: fields.bank, transferAt: fields.transferAt, ref: fields.ref,
       nickname: customer?.nickname ?? customer?.displayName ?? '',
@@ -149,20 +151,34 @@ export async function messageRoutes(app: FastifyInstance) {
     if (!customer) return reply.code(404).send({ error: 'customer_not_found' });
 
     const base = `${(req.headers['x-forwarded-proto'] as string) || req.protocol}://${req.headers.host}`;
+    const nickname = parsed.data.nickname ?? customer.nickname ?? customer.displayName ?? '';
+    const realName = parsed.data.realName ?? '';
+    const amount = normalizeAmount(parsed.data.amount ?? '');
+    const slipUrl = buildSlipUrl(base, msg.id);
+    const sales = req.agent?.name ?? '';
     const result = await sendToFinance({
-      nickname: parsed.data.nickname ?? customer.nickname ?? customer.displayName ?? '',
-      realName: parsed.data.realName ?? '',
-      amount: normalizeAmount(parsed.data.amount ?? ''),
+      nickname,
+      realName,
+      amount,
       bank: parsed.data.bank ?? '',
       transferAt: normalizeSlipDate(parsed.data.transferAt ?? ''),
       ref: parsed.data.ref ?? '',
-      slipUrl: buildSlipUrl(base, msg.id),
-      sales: req.agent?.name ?? '',
+      slipUrl,
+      sales,
     });
     if (!result.ok) return reply.code(502).send({ error: 'finance_send_failed', detail: result.error });
 
+    // Anti-tamper audit: the OCR-read amount is server-stored (sales can't influence it).
+    // If the staff submitted a DIFFERENT amount, log it to the admin "ตรวจสอบยอด" tab.
+    const ocrAmount = msg.slipAmount ?? '';
+    const corrected = !!ocrAmount && ocrAmount !== amount;
+    if (corrected) {
+      const diff = (parseFloat(amount || '0') - parseFloat(ocrAmount || '0')).toFixed(2);
+      void sendFinanceAudit({ nickname, realName, ocrAmount, amount, diff, slipUrl, sales }).catch(() => undefined);
+    }
+
     const updated = await prisma.message.update({ where: { id: msg.id }, data: { financeSentAt: new Date() } });
-    return { ok: true, financeSentAt: updated.financeSentAt };
+    return { ok: true, financeSentAt: updated.financeSentAt, corrected };
   });
 
   // POST /api/messages/:id/reply — approve & send a reply to the customer.

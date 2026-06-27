@@ -68,6 +68,9 @@ model Message {
   attachmentName   String?
   // when a payment-slip image was forwarded to finance (the Google Sheet) — also blocks double-send.
   financeSentAt    DateTime?
+  // the amount the AI OCR read off the slip (server-set, tamper-proof) — compared to the
+  // staff-entered amount on forward; a mismatch is logged to the admin audit report.
+  slipAmount       String?
   createdAt        DateTime @default(now())
 
   customer Customer @relation(fields: [customerId], references: [id])

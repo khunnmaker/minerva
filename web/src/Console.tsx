@@ -248,20 +248,23 @@ function CameraCapture({ onCapture, onClose }: { onCapture: (file: File) => void
 
 // "แจ้งการเงิน" — confirm a payment slip's details (AI-prefilled, staff-editable) then
 // forward them to the finance Google Sheet.
-function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClose: () => void; onSent: () => void }) {
+function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClose: () => void; onSent: (corrected: boolean) => void }) {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState('');
+  const [ocrAmount, setOcrAmount] = useState(''); // server-truth amount read off the slip
   const [f, setF] = useState({ nickname: '', realName: '', amount: '', bank: '', transferAt: '', ref: '' });
 
   useEffect(() => {
     let cancelled = false;
     readSlip(messageId)
-      .then((r) => { if (!cancelled) setF((p) => ({ ...p, ...r })); })
+      .then((r) => { if (!cancelled) { setF((p) => ({ ...p, ...r })); setOcrAmount(r.amount); } })
       .catch(() => undefined)
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [messageId]);
+
+  const amountEdited = !!ocrAmount && !!f.amount.trim() && f.amount.trim() !== ocrAmount;
 
   async function send() {
     if (sending || !f.amount.trim()) return;
@@ -269,7 +272,7 @@ function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClo
     try {
       const res = await sendToFinance(messageId, { amount: f.amount, bank: f.bank, transferAt: f.transferAt, ref: f.ref, nickname: f.nickname, realName: f.realName });
       if (!res.ok) { setErr('ส่งให้การเงินไม่สำเร็จ: ' + (res.error ?? '')); return; }
-      onSent();
+      onSent(res.corrected ?? false);
     } catch { setErr('ส่งให้การเงินไม่สำเร็จ'); } finally { setSending(false); }
   }
 
@@ -288,12 +291,18 @@ function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClo
         {loading && <div className="text-xs text-slate-400 flex items-center gap-1"><Loader2 size={13} className="animate-spin" /> กำลังอ่านสลิป…</div>}
         <div className="grid grid-cols-2 gap-2">
           {field('ชื่อเล่น', 'nickname', '', true)}
-          {field('ชื่อจริง (จากสลิป)', 'realName', 'ชื่อผู้โอน')}
+          {field('ชื่อผู้โอน', 'realName', 'ชื่อผู้โอน')}
           {field('จำนวนเงิน', 'amount', 'เช่น 1500')}
           {field('บัญชีที่รับเงิน', 'bank', 'กสิกร / ไทยพาณิชย์')}
           {field('วันเวลาโอน', 'transferAt', '27/06/2026 14:30')}
           {field('เลขอ้างอิง', 'ref', '')}
         </div>
+        {amountEdited && (
+          <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2 flex items-start gap-1.5">
+            <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+            <span>ยอดถูกแก้จากที่อ่านได้ในสลิป (<b>{ocrAmount}</b>) — รายการนี้จะถูกส่งให้แอดมินตรวจสอบ</span>
+          </div>
+        )}
         {err && <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-2">{err}</div>}
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-sm">ยกเลิก</button>
@@ -765,10 +774,10 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
           <FinanceModal
             messageId={financeMsg}
             onClose={() => setFinanceMsg(null)}
-            onSent={() => {
+            onSent={(corrected) => {
               setDetail((d) => (d ? { ...d, messages: d.messages.map((m) => (m.id === financeMsg ? { ...m, financeSentAt: new Date().toISOString() } : m)) } : d));
               setFinanceMsg(null);
-              flashToast('ส่งให้การเงินแล้ว ✓');
+              flashToast(corrected ? 'ส่งให้การเงินแล้ว — แจ้งแอดมินตรวจสอบยอด ✓' : 'ส่งให้การเงินแล้ว ✓');
             }}
           />
         )}

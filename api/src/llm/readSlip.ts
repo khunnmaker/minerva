@@ -6,13 +6,14 @@ export interface SlipFields {
   bank: string;
   transferAt: string;
   ref: string;
+  senderName: string;
 }
 
-const EMPTY: SlipFields = { amount: '', bank: '', transferAt: '', ref: '' };
+const EMPTY: SlipFields = { amount: '', bank: '', transferAt: '', ref: '', senderName: '' };
 
 const SLIP_SYSTEM = `คุณคือผู้ช่วยอ่าน "สลิปโอนเงิน/หลักฐานการชำระเงิน" จากธนาคารในประเทศไทย
 ดูรูปสลิปที่แนบมา แล้วดึงข้อมูลออกมาเป็น JSON เท่านั้น:
-{"amount":"จำนวนเงินเป็นตัวเลข เช่น 1500.00 (ไม่มีสัญลักษณ์/คอมมา)","bank":"ธนาคาร/เลขบัญชีปลายทางที่รับเงิน","transferAt":"วันที่และเวลาที่โอน เช่น 27/06/2026 14:30","ref":"เลขที่อ้างอิง/รหัสรายการ"}
+{"senderName":"ชื่อผู้โอน/เจ้าของบัญชีต้นทางที่ปรากฏบนสลิป (เช่น นาย/นาง/น.ส. ... หรือชื่อบัญชี — ผู้ที่ส่งเงินมา ไม่ใช่ผู้รับ)","amount":"จำนวนเงินเป็นตัวเลข เช่น 1500.00 (ไม่มีสัญลักษณ์/คอมมา)","bank":"ธนาคาร/เลขบัญชีปลายทางที่รับเงิน","transferAt":"วันที่และเวลาที่โอน เช่น 27/06/2026 14:30","ref":"เลขที่อ้างอิง/รหัสรายการ"}
 ถ้าหาค่าใดไม่เจอให้ใส่ "" ห้ามเดา ตอบ JSON อย่างเดียว`;
 
 // Best-effort OCR of a payment slip image → structured fields. Returns all-empty on
@@ -28,7 +29,7 @@ export async function readSlip(messageId: string, contentType: string): Promise<
     });
     const obj = JSON.parse(raw.replace(/```json/gi, '').replace(/```/g, '').trim()) as Record<string, unknown>;
     const s = (v: unknown) => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '');
-    return { amount: s(obj.amount), bank: s(obj.bank), transferAt: s(obj.transferAt), ref: s(obj.ref) };
+    return { amount: s(obj.amount), bank: s(obj.bank), transferAt: s(obj.transferAt), ref: s(obj.ref), senderName: s(obj.senderName) };
   } catch {
     return EMPTY;
   }

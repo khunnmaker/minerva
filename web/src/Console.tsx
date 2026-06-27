@@ -267,7 +267,7 @@ function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClo
     if (sending || !f.amount.trim()) return;
     setSending(true); setErr('');
     try {
-      const res = await sendToFinance(messageId, { amount: f.amount, bank: f.bank, transferAt: f.transferAt, ref: f.ref });
+      const res = await sendToFinance(messageId, { amount: f.amount, bank: f.bank, transferAt: f.transferAt, ref: f.ref, nickname: f.nickname, realName: f.realName });
       if (!res.ok) { setErr('ส่งให้การเงินไม่สำเร็จ: ' + (res.error ?? '')); return; }
       onSent();
     } catch { setErr('ส่งให้การเงินไม่สำเร็จ'); } finally { setSending(false); }
@@ -288,7 +288,7 @@ function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClo
         {loading && <div className="text-xs text-slate-400 flex items-center gap-1"><Loader2 size={13} className="animate-spin" /> กำลังอ่านสลิป…</div>}
         <div className="grid grid-cols-2 gap-2">
           {field('ชื่อเล่น', 'nickname', '', true)}
-          {field('ชื่อ / LINE', 'realName', '', true)}
+          {field('ชื่อจริง (จากสลิป)', 'realName', 'ชื่อผู้โอน')}
           {field('จำนวนเงิน', 'amount', 'เช่น 1500')}
           {field('บัญชีที่รับเงิน', 'bank', 'กสิกร / ไทยพาณิชย์')}
           {field('วันเวลาโอน', 'transferAt', '27/06/2026 14:30')}

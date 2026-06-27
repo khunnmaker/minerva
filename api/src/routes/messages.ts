@@ -124,9 +124,9 @@ export async function messageRoutes(app: FastifyInstance) {
     const customer = await prisma.customer.findUnique({ where: { id: msg.customerId } });
     const fields = await readSlip(msg.id, msg.attachmentRef || 'image/jpeg');
     return {
-      ...fields,
+      amount: fields.amount, bank: fields.bank, transferAt: fields.transferAt, ref: fields.ref,
       nickname: customer?.nickname ?? customer?.displayName ?? '',
-      realName: customer?.displayName ?? '',
+      realName: fields.senderName, // from the SLIP (sender), not the random LINE name
     };
   });
 
@@ -138,6 +138,8 @@ export async function messageRoutes(app: FastifyInstance) {
       bank: z.string().max(120).optional(),
       transferAt: z.string().max(60).optional(),
       ref: z.string().max(80).optional(),
+      nickname: z.string().max(80).optional(),
+      realName: z.string().max(120).optional(), // staff-confirmed sender name from the slip
     }).safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
     const msg = await prisma.message.findUnique({ where: { id: req.params.id } });
@@ -147,8 +149,8 @@ export async function messageRoutes(app: FastifyInstance) {
 
     const base = `${(req.headers['x-forwarded-proto'] as string) || req.protocol}://${req.headers.host}`;
     const result = await sendToFinance({
-      nickname: customer.nickname ?? customer.displayName ?? '',
-      realName: customer.displayName ?? '',
+      nickname: parsed.data.nickname ?? customer.nickname ?? customer.displayName ?? '',
+      realName: parsed.data.realName ?? '',
       amount: parsed.data.amount ?? '',
       bank: parsed.data.bank ?? '',
       transferAt: parsed.data.transferAt ?? '',

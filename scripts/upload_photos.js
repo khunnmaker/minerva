@@ -45,7 +45,7 @@ async function main() {
   const login = await fetch(`${BASE}/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email: 'nadeer@prominent.local', password: PASS }),
+    body: JSON.stringify({ email: 'drm@prominent.local', password: PASS }),
   }).then((r) => r.json());
   if (!login.token) throw new Error('login failed: ' + JSON.stringify(login));
   const auth = { authorization: `Bearer ${login.token}`, 'content-type': 'application/json' };

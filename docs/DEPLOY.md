@@ -56,14 +56,18 @@ Sign up at railway.app with the GitHub account, add a payment card. ~10 min.
   (baked into the bundle at build time so the console calls the right API).
 
 ## Stage 7 — First-time setup (one-off, run once)
-After the first successful deploy, run the seed once to create staff logins + load the KB.
-On the **api** service: open a shell / one-off command and run with a strong password:
+Staff logins are reconciled automatically on **every API boot** from env passwords — set
+`SEED_PASSWORD` (supervisor, Dr. M) and `STAFF_PASSWORD` (shared team login) on the api
+service and the four accounts are created/updated on start (and any stale account pruned).
+No seed step is needed for logins.
+
+To load the knowledge base, run the seed once on the **api** service:
 ```
-SEED_PASSWORD='<strong-password>' npm run seed
+npm run seed
 ```
-This creates: `mind@`, `fah@`, `nadeer@prominent.local` (nadeer = supervisor) and loads 38 KB entries.
-Re-running is safe but re-applies the canonical KB answers — don't run it again after
-supervisors have edited entries in the console.
+This loads ~38 KB entries (and touches nothing else — it no longer creates staff). Re-running
+is safe but re-applies the canonical KB answers — don't run it again after supervisors have
+edited entries in the console.
 
 ## Stage 8 — Point LINE at it
 LINE Developers console → the OA's **Messaging API** channel:
@@ -97,7 +101,8 @@ Redeploy. (Until this step, keep using the backup OA "AppDent Suggestion".)
 | `WEB_ORIGIN` | `https://${{web.RAILWAY_PUBLIC_DOMAIN}}` | yes (CORS) |
 | `LINE_DRY_RUN` | unset = real sends; `1` = log-only (staging) | no |
 | `RECENT_WINDOW` / `RETRIEVE_K` / `SESSION_IDLE_MINUTES` | defaults 10 / 3 / 30 | no |
-| `SEED_PASSWORD` | strong; used by the one-off seed | setup only |
+| `SEED_PASSWORD` | supervisor (Dr. M) login password — strong | yes (admin login) |
+| `STAFF_PASSWORD` | shared team (agent) login password | yes (team login) |
 
 `PORT` is provided by Railway automatically — don't set it.
 

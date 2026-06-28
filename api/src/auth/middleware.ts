@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest, preHandlerHookHandler } from 'fastify';
 import { verifyToken, type AuthedAgent, type Role } from './jwt.js';
+import { prisma } from '../db/prisma.js';
 
 // Make request.agent available everywhere, typed.
 declare module 'fastify' {
@@ -14,10 +15,26 @@ function bearer(req: FastifyRequest): string | null {
   return h.slice('Bearer '.length).trim() || null;
 }
 
-// preHandler: require a valid JWT; attaches request.agent.
+// Resolve a bearer token to the LIVE agent record. The JWT is treated only as a
+// signed claim of identity (its `sub`/id); role and existence are re-read from
+// the DB on every request, so a demotion or an account removal takes effect
+// immediately rather than lingering until the 12h token expires. Returns null if
+// the token is invalid OR the account no longer exists. Shared by the REST
+// preHandler and the Socket.IO handshake.
+export async function authedAgentFromToken(token: string | null): Promise<AuthedAgent | null> {
+  const claims = token ? verifyToken(token) : null;
+  if (!claims) return null;
+  const live = await prisma.agent.findUnique({
+    where: { id: claims.id },
+    select: { id: true, email: true, name: true, role: true },
+  });
+  if (!live || (live.role !== 'agent' && live.role !== 'supervisor')) return null;
+  return { id: live.id, email: live.email, name: live.name, role: live.role as Role };
+}
+
+// preHandler: require a valid token backed by a live account; attaches request.agent.
 export const requireAuth: preHandlerHookHandler = async (req: FastifyRequest, reply: FastifyReply) => {
-  const token = bearer(req);
-  const agent = token ? verifyToken(token) : null;
+  const agent = await authedAgentFromToken(bearer(req));
   if (!agent) {
     return reply.code(401).send({ error: 'unauthorized' });
   }

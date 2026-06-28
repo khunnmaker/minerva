@@ -49,20 +49,23 @@ npm run dev
 curl http://localhost:3000/health      # {"status":"ok","service":"minerva-api",...}
 curl http://localhost:3000/health/db   # {"status":"ok","db":"up"}
 ```
-Seed staff accounts + run the console:
+Load the KB + run the console:
 ```bash
-cd api && npm run seed                   # creates 3 dev staff accounts
+cd api && npm run seed                   # loads the KB only (staff are created on API boot)
 cd web && npm install && npm run dev     # http://localhost:5173 — log in to use the console
 ```
 
-### Staff accounts (dev seed)
-All use password **`prominent123`** (change for any real deployment):
+### Staff accounts
+Reconciled automatically on every API boot (see `api/src/db/ensureSeeded.ts`) — no seed
+step for logins. Passwords come from env vars, never the repo: set `SEED_PASSWORD` (the
+supervisor) and `STAFF_PASSWORD` (the shared team login) in `api/.env` for local dev.
 
-| email                    | name      | role       |
-|--------------------------|-----------|------------|
-| `mind@prominent.local`   | คุณมายด์   | agent      |
-| `fah@prominent.local`    | คุณฟ้า     | agent      |
-| `nadeer@prominent.local` | NaDeer    | supervisor |
+| email                    | name   | role       | password env     |
+|--------------------------|--------|------------|------------------|
+| `drm@prominent.local`    | Dr. M  | supervisor | `SEED_PASSWORD`  |
+| `nadeer@prominent.local` | NaDeer | agent      | `STAFF_PASSWORD` |
+| `anny@prominent.local`   | Anny   | agent      | `STAFF_PASSWORD` |
+| `noey@prominent.local`   | Noey   | agent      | `STAFF_PASSWORD` |
 
 ### Testing the LINE webhook without a real LINE OA
 Set a dev `LINE_CHANNEL_SECRET` in `api/.env`, then POST a body with a matching

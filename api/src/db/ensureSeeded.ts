@@ -1,5 +1,5 @@
 import { prisma } from './prisma.js';
-import { hashPassword } from '../auth/password.js';
+import { hashPassword, verifyPassword } from '../auth/password.js';
 import { HISTORY_KB } from '../kb/historyKb.js';
 
 // Canonical staff list — the single source of truth for who can log in.
@@ -21,7 +21,6 @@ const STAFF = [
 // guarded so a misconfigured env can never delete the last working login.
 async function syncStaff(): Promise<void> {
   const emails = STAFF.map((s) => s.email);
-  const hashes = new Map<string, string>(); // one hash per distinct password
   let allProvisioned = true;
   for (const s of STAFF) {
     const pw = process.env[s.pwEnv];
@@ -31,11 +30,17 @@ async function syncStaff(): Promise<void> {
       console.warn(`[staff] ${s.pwEnv} not set — skipping ${s.email}`);
       continue;
     }
-    let passwordHash = hashes.get(pw);
-    if (!passwordHash) {
-      passwordHash = await hashPassword(pw);
-      hashes.set(pw, passwordHash);
-    }
+    const existing = await prisma.agent.findUnique({
+      where: { email: s.email },
+      select: { passwordHash: true },
+    });
+    // Only (re)hash when the account is new or the env password actually changed —
+    // bcrypt salts differ per call, so hashing every boot would rewrite the row for
+    // no reason; verifyPassword still heals a rotated password.
+    const passwordHash =
+      existing && (await verifyPassword(pw, existing.passwordHash))
+        ? existing.passwordHash
+        : await hashPassword(pw);
     await prisma.agent.upsert({
       where: { email: s.email },
       update: { name: s.name, role: s.role, passwordHash },

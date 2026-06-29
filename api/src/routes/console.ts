@@ -26,7 +26,13 @@ export async function consoleRoutes(app: FastifyInstance) {
     });
 
     const queue = customers
-      .filter((c) => c.messages[0]?.role === 'customer')
+      // Waiting = latest message is the customer's AND it's after any "ตอบแล้ว" cutoff
+      // (so a chat marked answered leaves the queue but still shows in the customer list).
+      .filter(
+        (c) =>
+          c.messages[0]?.role === 'customer' &&
+          (!c.answeredThroughAt || c.messages[0].createdAt > c.answeredThroughAt),
+      )
       .map((c) => ({
         customer: {
           id: c.id,
@@ -189,11 +195,12 @@ export async function consoleRoutes(app: FastifyInstance) {
     if (!customer) return reply.code(404).send({ error: 'not_found' });
     const summary = await endSession(req.params.id);
     const stamp = new Date();
-    // "ตอบแล้ว": stamp the cutoff (AI then drafts only from later messages) and hide the chat
-    // from the queue (a new message reactivates it and drafts from that message onward).
+    // "ตอบแล้ว": stamp the cutoff so the AI drafts only from later messages. The chat STAYS
+    // visible in the customer list — it just drops out of the "waiting" queue (no orange dot),
+    // because /api/queue excludes customers whose latest message is before the cutoff.
     await prisma.customer.update({
       where: { id: req.params.id },
-      data: { active: false, answeredThroughAt: stamp },
+      data: { answeredThroughAt: stamp },
     });
     // Drop pending AI drafts for the handled (pre-cutoff) messages so no orphaned answer
     // can resurface — makes "the answer doesn't show here" structural, not gate-dependent.
@@ -204,7 +211,7 @@ export async function consoleRoutes(app: FastifyInstance) {
     if (handled.length) {
       await prisma.draft.deleteMany({ where: { messageId: { in: handled.map((m) => m.id) } } });
     }
-    pushToConsole('conversation:update', { customerId: req.params.id, ended: true });
+    pushToConsole('conversation:update', { customerId: req.params.id });
     return { ok: true, summary };
   });
 

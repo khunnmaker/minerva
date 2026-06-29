@@ -34,8 +34,8 @@ model Customer {
   answeredThroughAt DateTime?
   firstSeen   DateTime        @default(now())
   lastSeen    DateTime        @default(now())
-  // false once a staff member taps "ตอบแล้ว" — hides the chat from the console
-  // queue. A new inbound message flips it back to true (returning customer).
+  // legacy hide flag (the old "จบแชท" set it false). "ตอบแล้ว" no longer hides — chats stay
+  // visible and just leave the waiting queue via answeredThroughAt. New messages set it true.
   active      Boolean         @default(true)
   messages    Message[]
   memory      CustomerMemory?

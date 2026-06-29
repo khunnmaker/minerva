@@ -828,9 +828,8 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
     setEnding(true);
     try {
       const res = await endSession(selectedId);
-      flashToast(res.summary ? 'ตอบแล้ว — นำออกจากคิวและเก็บความจำแล้ว ✓' : 'ตอบแล้ว — นำออกจากคิวแล้ว');
-      setSelectedId(null); // close + remove the answered chat from the queue
-      setDetail(null);
+      flashToast(res.summary ? 'ตอบแล้ว — เลิกแจ้งเตือนและเก็บความจำแล้ว ✓' : 'ตอบแล้ว — เลิกแจ้งเตือนแล้ว');
+      await loadDetail(selectedId); // keep the chat open; it just leaves the "waiting" queue
       await refreshLists();
     } catch {
       setError('ทำเครื่องหมายตอบแล้วไม่สำเร็จ');

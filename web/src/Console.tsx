@@ -33,7 +33,10 @@ function fmtTime(t?: string) {
     return '';
   }
 }
-const nameOf = (c: CustomerLite) => c.nickname || c.displayName || c.lineUserId;
+const nameOf = (c: CustomerLite) => {
+  const base = c.nickname || c.displayName || c.lineUserId;
+  return c.code ? `${c.code} ${base}` : base;
+};
 const CATEGORIES = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'Lab'];
 
 // A stored attachment (image/video/audio/file) fetched with the JWT (the content
@@ -379,7 +382,7 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
   const [editText, setEditText] = useState('');
   const [sending, setSending] = useState(false);
   const [rewriting, setRewriting] = useState(false);
-  const [nickEdit, setNickEdit] = useState<string | null>(null);
+  const [nickEdit, setNickEdit] = useState<{ code: string; nickname: string } | null>(null);
   const [rewriteNote, setRewriteNote] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState<CustomerLite[] | null>(null);
@@ -764,14 +767,14 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
 
   async function saveNick() {
     if (nickEdit === null || !selectedId) return;
-    const val = nickEdit;
+    const { code, nickname } = nickEdit;
     setNickEdit(null);
     try {
-      await setNickname(selectedId, val);
+      await setNickname(selectedId, nickname, code);
       await loadDetail(selectedId);
       await refreshLists();
     } catch {
-      setError('ตั้งชื่อเล่นไม่สำเร็จ');
+      setError('บันทึกข้อมูลลูกค้าไม่สำเร็จ');
     }
   }
 
@@ -968,14 +971,21 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                 <div className="flex items-center gap-2 min-w-0 flex-1">
                   <MessageSquare size={18} className="shrink-0" />
                   {nickEdit !== null ? (
-                    <input autoFocus value={nickEdit} onChange={(e) => setNickEdit(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') saveNick(); if (e.key === 'Escape') setNickEdit(null); }}
-                      onBlur={saveNick} placeholder="ตั้งชื่อเล่น…"
-                      className="text-slate-800 bg-white text-sm rounded-md px-2 py-0.5 w-40 outline-none" />
+                    <div className="flex items-center gap-1">
+                      <input autoFocus value={nickEdit.code} onChange={(e) => setNickEdit({ ...nickEdit, code: e.target.value })}
+                        onKeyDown={(e) => { if (e.key === 'Enter') saveNick(); if (e.key === 'Escape') setNickEdit(null); }}
+                        placeholder="รหัส" title="รหัสลูกค้า (Express)"
+                        className="text-slate-800 bg-white text-sm rounded-md px-2 py-0.5 w-16 outline-none" />
+                      <input value={nickEdit.nickname} onChange={(e) => setNickEdit({ ...nickEdit, nickname: e.target.value })}
+                        onKeyDown={(e) => { if (e.key === 'Enter') saveNick(); if (e.key === 'Escape') setNickEdit(null); }}
+                        placeholder="ชื่อลูกค้า"
+                        className="text-slate-800 bg-white text-sm rounded-md px-2 py-0.5 w-36 outline-none" />
+                      <button onMouseDown={(e) => e.preventDefault()} onClick={saveNick} title="บันทึก" className="text-white/90 hover:text-white shrink-0"><CheckCircle2 size={16} /></button>
+                    </div>
                   ) : (
                     <>
                       <span className="shrink-0">{detail ? nameOf(detail.customer) : 'บทสนทนา'}</span>
-                      {detail && <button onClick={() => setNickEdit(detail.customer.nickname ?? '')} title="ตั้งชื่อเล่น" className="opacity-80 hover:opacity-100 shrink-0"><Pencil size={13} /></button>}
+                      {detail && <button onClick={() => setNickEdit({ code: detail.customer.code ?? '', nickname: detail.customer.nickname ?? '' })} title="แก้รหัส / ชื่อ" className="opacity-80 hover:opacity-100 shrink-0"><Pencil size={13} /></button>}
                       {detail && (
                         <div className="relative shrink-0">
                           <button type="button" onClick={() => setCatOpen((v) => !v)}

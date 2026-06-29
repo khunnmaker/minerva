@@ -33,6 +33,7 @@ export async function consoleRoutes(app: FastifyInstance) {
           lineUserId: c.lineUserId,
           displayName: c.displayName,
           nickname: c.nickname,
+          code: c.code,
           category: c.category,
           stage: c.stage,
           suggestedStage: c.suggestedStage,
@@ -49,7 +50,7 @@ export async function consoleRoutes(app: FastifyInstance) {
     const customers = await prisma.customer.findMany({
       where: { active: true },
       orderBy: { lastSeen: 'desc' },
-      select: { id: true, lineUserId: true, displayName: true, nickname: true, category: true, stage: true, suggestedStage: true, firstSeen: true, lastSeen: true },
+      select: { id: true, lineUserId: true, displayName: true, nickname: true, code: true, category: true, stage: true, suggestedStage: true, firstSeen: true, lastSeen: true },
     });
     return { customers };
   });
@@ -63,6 +64,7 @@ export async function consoleRoutes(app: FastifyInstance) {
     const customers = await prisma.customer.findMany({
       where: {
         OR: [
+          { code: { contains: q, mode: 'insensitive' } },
           { nickname: { contains: q, mode: 'insensitive' } },
           { displayName: { contains: q, mode: 'insensitive' } },
           { lineUserId: { contains: q } },
@@ -70,7 +72,7 @@ export async function consoleRoutes(app: FastifyInstance) {
       },
       orderBy: { lastSeen: 'desc' },
       take: 30,
-      select: { id: true, lineUserId: true, displayName: true, nickname: true, category: true, stage: true, suggestedStage: true, firstSeen: true, lastSeen: true },
+      select: { id: true, lineUserId: true, displayName: true, nickname: true, code: true, category: true, stage: true, suggestedStage: true, firstSeen: true, lastSeen: true },
     });
     return { customers };
   });
@@ -188,17 +190,18 @@ export async function consoleRoutes(app: FastifyInstance) {
     return { ok: true, summary };
   });
 
-  // POST /api/customers/:id/nickname — set (or clear) the staff-assigned nickname.
+  // POST /api/customers/:id/nickname — set (or clear) the staff-assigned name + Express code.
   app.post<{ Params: { id: string } }>('/api/customers/:id/nickname', async (req, reply) => {
-    const parsed = z.object({ nickname: z.string().max(80) }).safeParse(req.body);
+    const parsed = z.object({ nickname: z.string().max(80), code: z.string().max(24).optional() }).safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
-    const nickname = parsed.data.nickname.trim() || null;
+    const data: { nickname: string | null; code?: string | null } = { nickname: parsed.data.nickname.trim() || null };
+    if (parsed.data.code !== undefined) data.code = parsed.data.code.trim() || null;
     const customer = await prisma.customer
-      .update({ where: { id: req.params.id }, data: { nickname } })
+      .update({ where: { id: req.params.id }, data })
       .catch(() => null);
     if (!customer) return reply.code(404).send({ error: 'not_found' });
     pushToConsole('conversation:update', { customerId: req.params.id });
-    return { ok: true, nickname };
+    return { ok: true, nickname: customer.nickname, code: customer.code };
   });
 
   // POST /api/customers/:id/category — set (or clear) the staff-assigned area/type

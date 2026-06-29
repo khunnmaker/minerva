@@ -30,6 +30,7 @@ export interface CustomerLite {
   lineUserId: string;
   displayName: string | null;
   nickname: string | null;
+  code: string | null;
   category: string | null;
   stage: string | null;
   suggestedStage: string | null;
@@ -147,10 +148,10 @@ export const getCustomer = (id: string) => authed<CustomerDetail>(`/api/customer
 export const searchCustomers = (q: string) =>
   authed<{ customers: CustomerLite[] }>(`/api/customers/search?q=${encodeURIComponent(q)}`);
 
-export const setNickname = (customerId: string, nickname: string) =>
-  authed<{ ok: boolean; nickname: string | null }>(`/api/customers/${customerId}/nickname`, {
+export const setNickname = (customerId: string, nickname: string, code?: string) =>
+  authed<{ ok: boolean; nickname: string | null; code: string | null }>(`/api/customers/${customerId}/nickname`, {
     method: 'POST',
-    body: JSON.stringify({ nickname }),
+    body: JSON.stringify({ nickname, code }),
   });
 
 export const setCategory = (customerId: string, category: string) =>

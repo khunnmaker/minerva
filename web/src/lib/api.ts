@@ -3,6 +3,10 @@
 
 export const API_URL: string = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
 
+// Display product codes bare (no dashes) for easy reading/typing — "07-10-09" → "071009".
+// Presentation only; the stored key keeps its dashes and search is dash-insensitive.
+export const flatSku = (sku: string): string => sku.replace(/-/g, '');
+
 export type Role = 'agent' | 'supervisor';
 export interface Agent {
   id: string;

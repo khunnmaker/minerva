@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import {
   getQueue, getCustomers, getCustomer, searchCustomers, clearSession, regenerateDraft, rewriteText, sendReply, setNickname, setCategory, setStage, STAGES,
-  uploadAttachment, getLearned, promoteLearned, rejectLearned, endSession, API_URL, getToken,
+  uploadAttachment, getLearned, promoteLearned, rejectLearned, endSession, API_URL, flatSku, getToken,
   getFinanceAudits, resolveFinanceAudit, type FinanceAudit,
   getQuickReplies, addQuickReply, deleteQuickReply, sendQuickReply, sendMessage, sendPhotoNow, searchCatalog, addProductToDraft, readSlip, sendToFinance,
   type Agent, type CustomerLite, type CustomerDetail, type Message, type LearnedAnswer, type PendingProduct, type QuickReply,
@@ -153,7 +153,7 @@ function PhotoStrip({ direct, cross, selected, onToggle }: {
           {sel && <span className="absolute top-0.5 right-0.5 bg-teal-600 text-white rounded-full p-0.5 flex"><Check size={11} /></span>}
         </div>
         <div className="text-[10px] mt-1 leading-tight">
-          <div className="font-semibold text-teal-800 truncate">{[p.nameEn, p.nameTh].filter(Boolean).join(' / ') || p.sku}</div>
+          <div className="font-semibold text-teal-800 truncate">{[p.nameEn, p.nameTh].filter(Boolean).join(' / ') || flatSku(p.sku)}</div>
           <div className="text-teal-600">{p.price > 0 ? `${p.price.toLocaleString()} บาท` : '—'}</div>
           {p.stock != null ? (() => {
             const out = p.stock <= 0;
@@ -1195,9 +1195,9 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                                           onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} />
                                       : <div className="w-9 h-9 shrink-0 rounded bg-slate-100 text-[8px] text-slate-400 flex items-center justify-center text-center">ไม่มีรูป</div>}
                                     <div className="flex-1 min-w-0">
-                                      <div className="text-[11px] font-medium text-slate-800 truncate">{[p.nameEn, p.nameTh].filter(Boolean).join(' / ') || p.sku}</div>
+                                      <div className="text-[11px] font-medium text-slate-800 truncate">{[p.nameEn, p.nameTh].filter(Boolean).join(' / ') || flatSku(p.sku)}</div>
                                       <div className="text-[10px] text-slate-500 truncate">
-                                        {p.sku} · {p.price > 0 ? `${p.price.toLocaleString()} บาท` : '—'}
+                                        {flatSku(p.sku)} · {p.price > 0 ? `${p.price.toLocaleString()} บาท` : '—'}
                                         {p.stock != null && (() => {
                                           const out = p.stock <= 0;
                                           const lowFlag = !out && (p.low ?? (p.reorderPoint == null && p.stock <= 5));

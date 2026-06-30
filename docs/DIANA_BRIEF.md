@@ -56,6 +56,12 @@ Prominent approves → logs in → sees prices → orders.**
     `stockAt`, `reorderPoint`.
   - **Product photos are served by SKU**: `GET /content/product/:sku` returns the image. Diana can
     reuse these.
+  - **SKU display/typing convention (follow this in Diana):** the stored `sku` key keeps its dashes
+    (`"07-10-09"`) — it's the SSOT key shared with Express/Minerva/Vulcan, **do not change it**. But
+    everywhere a code is **shown to or typed by a user**, present it **bare** (`071009`): display via
+    `sku.replace(/-/g,'')`, and make any SKU search **dash-insensitive** (compare against
+    `replace(sku,'-','')` so `071009`, `07-10-09`, and partials all match). Minerva + Vulcan already
+    do this; mirror it so codes read/type the same across all three apps.
   - Auth: JWT + bcrypt; roles `agent | supervisor`.
   - Has a **finance / payment flow** with **tax-invoice (ใบกำกับภาษี) capture** (name/address/tax-ID)
     that forwards to a finance sheet — relevant to Channa's Express/tax-invoice handoff (#7); reusable patterns.

@@ -8,7 +8,7 @@ import {
   type Agent, type StockRow, type StockSummary, type StockImportRow,
   type StockAdjustmentRow, type ImportPreview,
   getSummary, getStockList, adjustStock, setReorderPoint, getImports, getAdjustments,
-  previewImport, applyImport, clearSession, API_URL,
+  previewImport, applyImport, clearSession, API_URL, flatSku,
 } from './lib/api';
 
 type Tab = 'dashboard' | 'stock' | 'import' | 'history';
@@ -299,8 +299,8 @@ function DashboardTab({
                 <li key={r.sku} className="flex items-center gap-2.5 py-1.5">
                   <Thumb photoSku={r.photoSku} size={30} />
                   <div className="min-w-0 flex-1">
-                    <div className="text-sm text-slate-700 truncate">{r.nameTh || r.nameEn || r.sku}</div>
-                    <div className="text-[10px] text-slate-400 font-mono">{r.sku}</div>
+                    <div className="text-sm text-slate-700 truncate">{r.nameTh || r.nameEn || flatSku(r.sku)}</div>
+                    <div className="text-[10px] text-slate-400 font-mono">{flatSku(r.sku)}</div>
                   </div>
                   <div className="text-right shrink-0">
                     <span className="text-sm font-bold text-rose-600">{r.stock}</span>
@@ -336,7 +336,7 @@ function DashboardTab({
                 <li key={a.id} className="flex items-center gap-2">
                   <Package size={13} className="text-slate-400 shrink-0" />
                   <span className="text-slate-600 flex-1 min-w-0 truncate">
-                    <span className="font-mono text-xs">{a.sku}</span> {a.fromQty ?? '—'} → <b>{a.toQty ?? '—'}</b>
+                    <span className="font-mono text-xs">{flatSku(a.sku)}</span> {a.fromQty ?? '—'} → <b>{a.toQty ?? '—'}</b>
                     {a.reason ? ` · ${a.reason}` : ''}
                   </span>
                   <span className="text-[11px] text-slate-400 shrink-0">{relTime(a.at)}</span>
@@ -390,7 +390,7 @@ function StockTab({
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="ค้นหาด้วยชื่อหรือรหัสสินค้า (SKU)…"
+            placeholder="ค้นหาด้วยชื่อ หรือรหัสสินค้า เช่น 071009…"
             className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
           />
         </div>
@@ -466,9 +466,9 @@ function RowItem({
           <div className="flex items-center gap-2.5">
             <Thumb photoSku={row.photoSku} />
             <div className="min-w-0">
-              <div className="font-medium text-slate-800 truncate">{row.nameTh || row.nameEn || row.sku}</div>
+              <div className="font-medium text-slate-800 truncate">{row.nameTh || row.nameEn || flatSku(row.sku)}</div>
               <div className="text-xs text-slate-400 font-mono">
-                {row.sku}
+                {flatSku(row.sku)}
                 {row.nameEn && row.nameTh && <span className="text-slate-300"> · {row.nameEn}</span>}
               </div>
             </div>
@@ -753,7 +753,7 @@ function ImportTab({ onApplied }: { onApplied: () => void }) {
                 <AlertTriangle size={13} /> SKU ที่ไม่พบในแคตตาล็อก (จะถูกข้าม ไม่สร้างใหม่):
               </div>
               <div className="font-mono">
-                {unmatchedRows.slice(0, 30).map((r) => r.sku).join(', ')}
+                {unmatchedRows.slice(0, 30).map((r) => flatSku(r.sku)).join(', ')}
                 {unmatchedRows.length > 30 && ` … (+${unmatchedRows.length - 30})`}
               </div>
             </div>
@@ -777,7 +777,7 @@ function ImportTab({ onApplied }: { onApplied: () => void }) {
                         <Thumb photoSku={r.photoSku} size={30} />
                         <div className="min-w-0">
                           <div className="text-slate-700 truncate">{r.name || r.csvName || '—'}</div>
-                          <div className="text-[10px] text-slate-400 font-mono">{r.sku}</div>
+                          <div className="text-[10px] text-slate-400 font-mono">{flatSku(r.sku)}</div>
                         </div>
                       </div>
                     </td>
@@ -887,7 +887,7 @@ function HistoryTab() {
           <ul className="space-y-2 text-sm">
             {adjustments.map((a) => (
               <li key={a.id} className="border-b border-slate-100 pb-2 last:border-0">
-                <div className="text-slate-700 font-mono text-xs">{a.sku}</div>
+                <div className="text-slate-700 font-mono text-xs">{flatSku(a.sku)}</div>
                 <div className="text-xs text-slate-500">
                   {fmtDateTime(a.at)} · {a.fromQty ?? '—'} → <b>{a.toQty ?? '—'}</b>
                   {a.reason ? ` · ${a.reason}` : ''}

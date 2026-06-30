@@ -96,38 +96,51 @@ export async function findProducts(query: string, limit = 5): Promise<ProductMat
     .map(({ p }) => toProductMatch(p));
 }
 
-// Manual product search for the console — matches by NAME (token overlap) OR SKU
-// (substring). Used when the AI's auto-match isn't what the team wants. SKU matches
-// rank first; returns more results than findProducts.
+// Manual product search for the console — matches by NAME (token overlap) OR SKU.
+// SKU matching is DASH-INSENSITIVE: "071009", "07-10-09", and "0710" all match the
+// stored "07-10-09" (codes are entered/shown bare for easy typing; the stored key keeps
+// its dashes). SKU matches rank first; returns more results than findProducts.
 export async function searchProducts(query: string, limit = 12): Promise<ProductMatch[]> {
   const raw = (query || '').trim();
   if (!raw) return [];
   const tokens = questionKeywords(raw);
-  const skuLike = raw.replace(/\s+/g, '');
+  const compact = raw.replace(/\s+/g, '');
+  // The query's SKU text with separators removed, for dash-insensitive matching.
+  const skuFlat = raw.replace(/[^0-9a-z]/gi, '').toLowerCase();
   // A pure digits/dashes query is a SKU lookup → match SKU only (skip name-token noise).
-  const isSkuQuery = /^[\d-]+$/.test(skuLike);
+  const isSkuQuery = /^[\d-]+$/.test(compact);
+
+  // SKU candidates: compare against the dash-stripped stored code. Prisma can't transform
+  // a column inside `contains`, so the SKU lookup is raw SQL.
+  let skuHits: string[] = [];
+  if (skuFlat.length >= 2) {
+    const rows = await prisma.$queryRaw<{ sku: string }[]>`
+      SELECT sku FROM "Product"
+      WHERE status = 'active' AND replace(lower(sku), '-', '') LIKE ${`%${skuFlat}%`}
+      LIMIT 80`;
+    skuHits = rows.map((r) => r.sku);
+  }
+
+  const or = [
+    ...(skuHits.length ? [{ sku: { in: skuHits } }] : []),
+    ...(isSkuQuery
+      ? []
+      : tokens.flatMap((t) => [
+          { nameEn: { contains: t, mode: 'insensitive' as const } },
+          { nameTh: { contains: t } },
+          { keywords: { has: t } },
+        ])),
+  ];
+  if (or.length === 0) return []; // SKU query with no hits, or no usable tokens
 
   const candidates = await prisma.product.findMany({
-    where: {
-      status: 'active',
-      OR: [
-        { sku: { contains: skuLike, mode: 'insensitive' as const } },
-        ...(isSkuQuery
-          ? []
-          : tokens.flatMap((t) => [
-              { nameEn: { contains: t, mode: 'insensitive' as const } },
-              { nameTh: { contains: t } },
-              { keywords: { has: t } },
-            ])),
-      ],
-    },
+    where: { status: 'active', OR: or },
     take: 80,
   });
 
-  const skuLc = skuLike.toLowerCase();
   const score = (p: Product) => {
     let s = 0;
-    if (skuLc && p.sku.toLowerCase().includes(skuLc)) s += 5;
+    if (skuFlat && p.sku.replace(/-/g, '').toLowerCase().includes(skuFlat)) s += 5;
     const hay = `${p.nameEn} ${p.nameTh} ${p.keywords.join(' ')}`.toLowerCase();
     for (const t of tokens) if (hay.includes(t)) s++;
     return s;

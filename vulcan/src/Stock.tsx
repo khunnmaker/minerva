@@ -7,10 +7,36 @@ import {
   type Agent, type StockRow, type StockSummary, type StockImportRow,
   type StockAdjustmentRow, type ImportPreview,
   getSummary, getStockList, adjustStock, setReorderPoint, getImports, getAdjustments,
-  previewImport, applyImport, clearSession,
+  previewImport, applyImport, clearSession, API_URL,
 } from './lib/api';
 
 type Tab = 'stock' | 'import' | 'history';
+
+// Product photo thumbnail (served public from the shared api). photoSku is the catalog
+// photo key (variants share a lead photo); hides itself if the image is missing.
+function Thumb({ photoSku, size = 36 }: { photoSku: string | null; size?: number }) {
+  if (!photoSku) {
+    return (
+      <div
+        style={{ width: size, height: size }}
+        className="shrink-0 rounded bg-slate-100 text-[8px] text-slate-400 flex items-center justify-center text-center leading-none"
+      >
+        ไม่มีรูป
+      </div>
+    );
+  }
+  return (
+    <img
+      src={`${API_URL}/content/product/${photoSku}`}
+      alt=""
+      style={{ width: size, height: size }}
+      className="shrink-0 rounded object-contain bg-white border border-slate-100"
+      onError={(e) => {
+        e.currentTarget.style.visibility = 'hidden';
+      }}
+    />
+  );
+}
 
 function fmtDate(iso: string | null): string {
   if (!iso) return '—';
@@ -220,8 +246,16 @@ function RowItem({
         className={`border-t border-slate-100 cursor-pointer hover:bg-slate-50 ${row.low ? 'bg-rose-50/50' : ''}`}
       >
         <td className="px-4 py-2.5">
-          <div className="font-medium text-slate-800">{row.nameTh || row.nameEn || row.sku}</div>
-          <div className="text-xs text-slate-400 font-mono">{row.sku}</div>
+          <div className="flex items-center gap-2.5">
+            <Thumb photoSku={row.photoSku} />
+            <div className="min-w-0">
+              <div className="font-medium text-slate-800 truncate">{row.nameTh || row.nameEn || row.sku}</div>
+              <div className="text-xs text-slate-400 font-mono">
+                {row.sku}
+                {row.nameEn && row.nameTh && <span className="text-slate-300"> · {row.nameEn}</span>}
+              </div>
+            </div>
+          </div>
         </td>
         <td className="px-3 py-2.5 text-right">
           {row.stock == null ? (
@@ -512,8 +546,7 @@ function ImportTab({ onApplied }: { onApplied: () => void }) {
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase sticky top-0">
                 <tr>
-                  <th className="text-left px-3 py-2 font-semibold">SKU</th>
-                  <th className="text-left px-3 py-2 font-semibold">ชื่อ (จาก CSV)</th>
+                  <th className="text-left px-3 py-2 font-semibold">สินค้า</th>
                   <th className="text-right px-3 py-2 font-semibold">ปัจจุบัน</th>
                   <th className="text-right px-3 py-2 font-semibold">ใหม่</th>
                   <th className="px-3 py-2"></th>
@@ -522,8 +555,15 @@ function ImportTab({ onApplied }: { onApplied: () => void }) {
               <tbody>
                 {preview.rows.map((r, i) => (
                   <tr key={`${r.sku}-${i}`} className={`border-t border-slate-100 ${!r.matched ? 'bg-amber-50/40' : ''}`}>
-                    <td className="px-3 py-1.5 font-mono text-xs">{r.sku}</td>
-                    <td className="px-3 py-1.5 text-slate-600">{r.csvName || '—'}</td>
+                    <td className="px-3 py-1.5">
+                      <div className="flex items-center gap-2">
+                        <Thumb photoSku={r.photoSku} size={30} />
+                        <div className="min-w-0">
+                          <div className="text-slate-700 truncate">{r.name || r.csvName || '—'}</div>
+                          <div className="text-[10px] text-slate-400 font-mono">{r.sku}</div>
+                        </div>
+                      </div>
+                    </td>
                     <td className="px-3 py-1.5 text-right text-slate-400">{r.matched ? (r.currentStock ?? '—') : '—'}</td>
                     <td className="px-3 py-1.5 text-right font-semibold">{r.qty}</td>
                     <td className="px-3 py-1.5 text-center">

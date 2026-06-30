@@ -56,7 +56,9 @@ export interface StockAdjustmentRow {
 // One parsed CSV line resolved against the catalog.
 export interface ImportPreviewRow {
   sku: string;
-  csvName: string; // name as it appears in the CSV (for the unmatched report)
+  name: string; // clean catalog name (falls back to the raw Express text if unmatched)
+  photoSku: string | null; // catalog photo key (matched only); null = no photo
+  csvName: string; // raw name as it appears in the Express report
   qty: number;
   matched: boolean; // sku exists in Product
   currentStock: number | null; // current Product.stock (matched only)

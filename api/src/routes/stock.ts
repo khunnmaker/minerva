@@ -189,20 +189,24 @@ export async function stockRoutes(app: FastifyInstance) {
     const skus = parsed.rows.map((r) => r.sku);
     const existing = await prisma.product.findMany({
       where: { sku: { in: skus } },
-      select: { sku: true, stock: true },
+      select: { sku: true, stock: true, nameEn: true, nameTh: true, photoSku: true },
     });
-    const current = new Map(existing.map((p) => [p.sku, p.stock]));
+    const cat = new Map(existing.map((p) => [p.sku, p]));
 
     let matched = 0;
     let willChange = 0;
     const rows = parsed.rows.map((r) => {
-      const isMatched = current.has(r.sku);
-      const currentStock = isMatched ? current.get(r.sku)! : null;
+      const c = cat.get(r.sku);
+      const isMatched = !!c;
+      const currentStock = c ? c.stock : null;
       const changes = isMatched && r.qty !== currentStock;
       if (isMatched) matched++;
       if (changes) willChange++;
       return {
         sku: r.sku,
+        // Prefer the clean catalog name; fall back to the raw Express text (unmatched rows).
+        name: c ? c.nameTh || c.nameEn || r.name : r.name,
+        photoSku: c?.photoSku ?? null,
         csvName: r.name,
         qty: r.qty,
         matched: isMatched,

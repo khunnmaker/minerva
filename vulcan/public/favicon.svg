@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#4f46e5"/>
+  <g fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <!-- box outline -->
+    <path d="M16 6.5 L24.5 11 L24.5 20.5 L16 25 L7.5 20.5 L7.5 11 Z"/>
+    <!-- top fold -->
+    <path d="M7.5 11 L16 15.5 L24.5 11"/>
+    <!-- front vertical -->
+    <path d="M16 15.5 L16 25"/>
+  </g>
+</svg>

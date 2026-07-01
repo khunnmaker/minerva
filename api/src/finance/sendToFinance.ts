@@ -23,6 +23,7 @@ async function postToSheet(body: Record<string, unknown>): Promise<{ ok: boolean
 }
 
 export interface FinancePayload {
+  code: string; // customer code (e.g. ร001), blank if the customer has none
   nickname: string;
   realName: string;
   amount: string;

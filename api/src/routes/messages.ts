@@ -163,6 +163,7 @@ export async function messageRoutes(app: FastifyInstance) {
     const slipUrl = buildSlipUrl(base, msg.id);
     const sales = req.agent?.name ?? '';
     const result = await sendToFinance({
+      code: customer.code ?? '',
       nickname,
       realName,
       amount,

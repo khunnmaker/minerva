@@ -92,7 +92,7 @@ export default function Stock({ agent, onLogout }: { agent: Agent; onLogout: () 
               สต็อก
             </TabBtn>
             <TabBtn active={tab === 'import'} onClick={() => setTab('import')} icon={<Upload size={15} />}>
-              นำเข้า CSV
+              นำเข้าสต็อก
             </TabBtn>
             <TabBtn active={tab === 'history'} onClick={() => setTab('history')} icon={<History size={15} />}>
               ประวัติ
@@ -272,7 +272,7 @@ function DashboardTab({
           onClick={onGoImport}
           className="ml-auto px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium flex items-center gap-1"
         >
-          <Upload size={14} /> นำเข้า CSV
+          <Upload size={14} /> นำเข้าสต็อก
         </button>
       </div>
 
@@ -659,10 +659,13 @@ function ImportTab({ onApplied }: { onApplied: () => void }) {
       const p = await previewImport(dataB64, file.name);
       setPreview(p);
     } catch (e) {
+      const msg = e instanceof Error ? e.message : '';
       setErr(
-        e instanceof Error && e.message === 'forbidden'
+        msg === 'forbidden'
           ? 'ไม่มีสิทธิ์'
-          : 'อ่านไฟล์ไม่สำเร็จ — ตรวจสอบว่าเป็น CSV จาก Express',
+          : msg.includes('413')
+          ? 'ไฟล์ใหญ่เกินไป — เกินขีดจำกัดของเซิร์ฟเวอร์'
+          : 'อ่านไฟล์ไม่สำเร็จ — ตรวจสอบว่าเป็นไฟล์รายงานสต็อกจาก Express (.txt)',
       );
     } finally {
       setBusy(null);
@@ -678,8 +681,9 @@ function ImportTab({ onApplied }: { onApplied: () => void }) {
       setDone({ updated: res.skusUpdated, unmatched: res.skusUnmatched });
       setPreview(null);
       onApplied();
-    } catch {
-      setErr('นำเข้าไม่สำเร็จ');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '';
+      setErr(msg.includes('410') ? 'พรีวิวหมดอายุ — กรุณาอัปโหลดไฟล์ใหม่' : 'นำเข้าไม่สำเร็จ');
     } finally {
       setBusy(null);
     }
@@ -694,7 +698,7 @@ function ImportTab({ onApplied }: { onApplied: () => void }) {
     <div className="max-w-3xl">
       <div className="bg-white rounded-2xl border border-slate-200 p-5">
         <h2 className="font-semibold text-slate-800 mb-1 flex items-center gap-2">
-          <Upload size={18} className="text-indigo-600" /> นำเข้าไฟล์สต็อกประจำวัน (Express CSV)
+          <Upload size={18} className="text-indigo-600" /> นำเข้าไฟล์สต็อกประจำวัน (รายงานจาก Express)
         </h2>
         <p className="text-sm text-slate-500 mb-4">
           อัปโหลดไฟล์ → ดูตัวอย่างการเปลี่ยนแปลง → ยืนยันเพื่อบันทึก จำนวนสต็อกจะอัปเดตให้ Minerva ทันที
@@ -717,7 +721,7 @@ function ImportTab({ onApplied }: { onApplied: () => void }) {
           className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold flex items-center gap-2 disabled:opacity-50"
         >
           {busy === 'preview' ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
-          เลือกไฟล์ CSV
+          เลือกไฟล์รายงานสต็อก
         </button>
         {fileName && <span className="ml-3 text-sm text-slate-500">{fileName}</span>}
 
@@ -746,6 +750,20 @@ function ImportTab({ onApplied }: { onApplied: () => void }) {
               encoding: {preview.encoding}
             </span>
           </div>
+
+          {preview.unresolved > 0 && (
+            <div className="mb-3 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs">
+              <div className="font-semibold mb-1 flex items-center gap-1">
+                <AlertTriangle size={13} />
+                อ่านไม่ได้ {preview.unresolved} บรรทัด — แถวเหล่านี้จะไม่ถูกอัปเดต (รูปแบบไฟล์อาจเปลี่ยน แจ้งผู้ดูแลระบบ)
+              </div>
+              <div className="font-mono">
+                {preview.unresolvedSamples.map((s, i) => (
+                  <div key={i}>{s}</div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {unmatchedRows.length > 0 && (
             <div className="mb-3 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs">

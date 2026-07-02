@@ -78,6 +78,8 @@ export interface ImportPreview {
   matched: number;
   unmatched: number;
   willChange: number;
+  unresolved: number; // SKU lines the parser couldn't extract a qty from (skipped, not applied)
+  unresolvedSamples: string[]; // up to 5 raw offending lines, for human review
   rows: ImportPreviewRow[];
 }
 export interface ImportApplyResult {

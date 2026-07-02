@@ -16,7 +16,7 @@ const MAX_UPLOAD_BYTES = 12 * 1024 * 1024; // Express reports are ~1.5 MB; cap g
 // In-memory staging for previewed imports: the manager previews, eyeballs the diff,
 // then applies the EXACT parsed set (server-authoritative — the client can't re-send
 // tampered numbers). Lost on restart (harmless: just re-upload). Small + short-lived.
-interface StagedImport { fileName: string; rows: ParsedStockRow[]; at: number }
+interface StagedImport { fileName: string; rows: ParsedStockRow[]; unresolved: number; at: number }
 const PREVIEW_TTL_MS = 30 * 60 * 1000;
 const previews = new Map<string, StagedImport>();
 function stash(s: StagedImport): string {
@@ -30,8 +30,11 @@ function stash(s: StagedImport): string {
 }
 
 export async function stockRoutes(app: FastifyInstance) {
-  app.addHook('preHandler', requireAuth);
-  app.addHook('preHandler', requireRole('supervisor'));
+  // Auth runs at onRequest (BEFORE body parsing) so unauthenticated bodies are never
+  // parsed — preHandler runs AFTER body parsing, and with a 17 MB route limit that
+  // would let anonymous clients make the server buffer+parse 17 MB per request.
+  app.addHook('onRequest', requireAuth);
+  app.addHook('onRequest', requireRole('supervisor'));
 
   // GET /api/stock/summary — headline counts for the Vulcan dashboard / login landing.
   app.get('/api/stock/summary', async () => {
@@ -199,15 +202,20 @@ export async function stockRoutes(app: FastifyInstance) {
   // stock report (Windows-874 .txt) and diff it against the catalog. NO writes. Returns
   // a token to apply this exact parsed set. Absent SKUs are left unchanged (the report is
   // a full snapshot, but we never auto-zero or auto-create from the stock file).
-  app.post('/api/stock/import/preview', async (req, reply) => {
+  app.post('/api/stock/import/preview', {
+    // The daily Express report is ~1.5 MB and arrives base64-inside-JSON (×4/3): the
+    // Fastify default 1 MiB bodyLimit would 413 it before the handler runs. Sized to
+    // MAX_UPLOAD_BYTES after base64 inflation, plus envelope headroom.
+    bodyLimit: 17 * 1024 * 1024,
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
     const { dataB64, fileName } = req.body as { dataB64?: string; fileName?: string };
     if (!dataB64 || typeof dataB64 !== 'string') return reply.code(400).send({ error: 'missing_data' });
-    let buf: Buffer;
-    try {
-      buf = Buffer.from(dataB64, 'base64');
-    } catch {
-      return reply.code(400).send({ error: 'bad_base64' });
-    }
+    // Reject oversized payloads by encoded length before paying for a decode.
+    if (dataB64.length > Math.ceil((MAX_UPLOAD_BYTES * 4) / 3) + 4) return reply.code(413).send({ error: 'too_large' });
+    // Node's base64 decoder never throws (it silently skips invalid chars), so there's
+    // no bad_base64 branch here.
+    const buf = Buffer.from(dataB64, 'base64');
     if (!buf.length) return reply.code(400).send({ error: 'empty' });
     if (buf.length > MAX_UPLOAD_BYTES) return reply.code(413).send({ error: 'too_large' });
 
@@ -246,7 +254,7 @@ export async function stockRoutes(app: FastifyInstance) {
       };
     });
 
-    const token = stash({ fileName: String(fileName ?? ''), rows: parsed.rows, at: Date.now() });
+    const token = stash({ fileName: String(fileName ?? ''), rows: parsed.rows, unresolved: parsed.unresolved, at: Date.now() });
     return {
       token,
       fileName: String(fileName ?? ''),
@@ -255,6 +263,8 @@ export async function stockRoutes(app: FastifyInstance) {
       matched,
       unmatched: parsed.rows.length - matched,
       willChange,
+      unresolved: parsed.unresolved,
+      unresolvedSamples: parsed.unresolvedSamples,
       rows,
     };
   });
@@ -264,7 +274,11 @@ export async function stockRoutes(app: FastifyInstance) {
   app.post('/api/stock/import/apply', async (req, reply) => {
     const { token, note } = req.body as { token?: string; note?: string };
     const staged = token ? previews.get(token) : undefined;
-    if (!token || !staged) return reply.code(410).send({ error: 'preview_expired', detail: 'พรีวิวหมดอายุ — กรุณาอัปโหลดไฟล์ใหม่' });
+    // Enforce the TTL explicitly here — eviction elsewhere is lazy (only on new uploads).
+    if (!token || !staged || Date.now() - staged.at > PREVIEW_TTL_MS) {
+      if (token) previews.delete(token);
+      return reply.code(410).send({ error: 'preview_expired', detail: 'พรีวิวหมดอายุ — กรุณาอัปโหลดไฟล์ใหม่' });
+    }
     previews.delete(token);
 
     const importedAt = new Date();
@@ -278,17 +292,28 @@ export async function stockRoutes(app: FastifyInstance) {
     // Apply only matched SKUs, chunked so a 1000+ row import doesn't serialize forever.
     const toApply = staged.rows.filter((r) => known.has(r.sku));
     let skusUpdated = 0;
+    let failNote = '';
     const CHUNK = 50;
-    for (let i = 0; i < toApply.length; i += CHUNK) {
-      const slice = toApply.slice(i, i + CHUNK);
-      const results = await Promise.all(
-        slice.map((r) =>
-          prisma.product.updateMany({ where: { sku: r.sku }, data: { stock: r.qty, stockAt: importedAt } }),
-        ),
-      );
-      skusUpdated += results.reduce((n, x) => n + x.count, 0);
+    try {
+      for (let i = 0; i < toApply.length; i += CHUNK) {
+        const slice = toApply.slice(i, i + CHUNK);
+        const results = await Promise.all(
+          slice.map((r) =>
+            prisma.product.updateMany({ where: { sku: r.sku }, data: { stock: r.qty, stockAt: importedAt } }),
+          ),
+        );
+        skusUpdated += results.reduce((n, x) => n + x.count, 0);
+      }
+    } catch (err) {
+      failNote = `partial_failure: ${err instanceof Error ? err.message : String(err)}`.slice(0, 300);
     }
     const skusUnmatched = staged.rows.length - toApply.length;
+
+    const noteJoined = [
+      String(note ?? ''),
+      staged.unresolved > 0 ? `unresolved_lines:${staged.unresolved}` : '',
+      failNote,
+    ].filter(Boolean).join(' | ');
 
     const imp = await prisma.stockImport.create({
       data: {
@@ -297,10 +322,18 @@ export async function stockRoutes(app: FastifyInstance) {
         rowsParsed: staged.rows.length,
         skusUpdated,
         skusUnmatched,
-        note: String(note ?? ''),
+        note: noteJoined,
       },
     });
 
+    if (failNote) {
+      return reply.code(500).send({
+        error: 'apply_partial',
+        skusUpdated,
+        importId: imp.id,
+        detail: 'นำเข้าไม่สมบูรณ์ — บางรายการอาจอัปเดตแล้ว กรุณาอัปโหลดและนำเข้าใหม่',
+      });
+    }
     return { ok: true, skusUpdated, skusUnmatched, importId: imp.id };
   });
 }

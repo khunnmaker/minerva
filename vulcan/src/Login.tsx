@@ -3,7 +3,7 @@ import { Boxes, LogIn, Loader2, AlertTriangle } from 'lucide-react';
 import { login, setSession, type Agent } from './lib/api';
 
 export default function Login({ onLogin }: { onLogin: (agent: Agent) => void }) {
-  const [email, setEmail] = useState('drm@prominent.local');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');

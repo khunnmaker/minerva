@@ -21,6 +21,7 @@ export interface Message {
   role: 'customer' | 'agent';
   text: string;
   agentId: string | null;
+  agentName?: string | null; // sender staff name (agent messages; null if the account was pruned)
   kbIds: string[];
   channelMsgId: string | null;
   attachmentType: string | null; // image | sticker | video | audio | file | location | product
@@ -293,7 +294,7 @@ export async function sendMessage(
   return res.json() as Promise<{ message: Message; dryRun: boolean }>;
 }
 
-export interface SlipReadResult { nickname: string; realName: string; amount: string; bank: string; transferAt: string; ref: string }
+export interface SlipReadResult { nickname: string; code: string; realName: string; amount: string; bank: string; transferAt: string; ref: string }
 // OCR a customer's payment slip → pre-fill fields (best-effort; blanks if no LLM credits).
 export const readSlip = (messageId: string) =>
   authed<SlipReadResult>(`/api/messages/${messageId}/read-slip`, { method: 'POST' });
@@ -302,13 +303,14 @@ export const readSlip = (messageId: string) =>
 export async function sendToFinance(
   messageId: string,
   fields: { amount: string; bank: string; transferAt: string; ref: string; nickname: string; realName: string; taxInvoice?: string; note?: string },
-): Promise<{ ok: boolean; error?: string; financeSentAt?: string; corrected?: boolean }> {
+): Promise<{ ok: boolean; error?: string; financeSentAt?: string; corrected?: boolean; alreadySent?: boolean }> {
   const token = getToken();
   const res = await fetch(`${API_URL}/api/messages/${messageId}/to-finance`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify(fields),
   });
+  if (res.status === 409) return { ok: false, alreadySent: true };
   if (!res.ok) {
     const e = (await res.json().catch(() => ({}))) as { detail?: string; error?: string };
     return { ok: false, error: e.detail || e.error || `HTTP ${res.status}` };

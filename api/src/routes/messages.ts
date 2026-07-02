@@ -154,6 +154,7 @@ export async function messageRoutes(app: FastifyInstance) {
     return {
       amount: fields.amount, bank: fields.bank, transferAt: fields.transferAt, ref: fields.ref,
       nickname: customer ? await resolveCustomerName(customer) : '',
+      code: customer?.code ?? '', // customer code (ร001) — shown read-only in the finance card
       realName: fields.senderName, // from the SLIP (sender), not the random LINE name
     };
   });
@@ -174,6 +175,7 @@ export async function messageRoutes(app: FastifyInstance) {
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
     const msg = await prisma.message.findUnique({ where: { id: req.params.id } });
     if (!msg || msg.attachmentType !== 'image') return reply.code(404).send({ error: 'not_an_image' });
+    if (msg.financeSentAt) return reply.code(409).send({ error: 'already_sent', financeSentAt: msg.financeSentAt });
     const customer = await prisma.customer.findUnique({ where: { id: msg.customerId } });
     if (!customer) return reply.code(404).send({ error: 'customer_not_found' });
 
@@ -182,29 +184,85 @@ export async function messageRoutes(app: FastifyInstance) {
     // if neither is stored (e.g. imported with only a code) fetch the live LINE name + cache it.
     const nickname = await resolveCustomerName(customer);
     const realName = parsed.data.realName ?? '';
-    const amount = normalizeAmount(parsed.data.amount ?? '');
+    // Server-enforced amount: when the OCR read a value off the slip, that stored value is the
+    // ONLY amount accepted — the client's value is ignored entirely, so neither the console nor
+    // a direct API call can alter the money figure (the slip fields are also locked in the UI).
+    // The client amount is used only when the OCR could not read the slip. A mis-read slip is
+    // corrected by FINANCE during verification (they see the slip image), not by sales.
+    const amount = msg.slipAmount ? normalizeAmount(msg.slipAmount) : normalizeAmount(parsed.data.amount ?? '');
+    const bank = parsed.data.bank ?? '';
+    const transferAt = normalizeSlipDate(parsed.data.transferAt ?? '');
+    const ref = parsed.data.ref ?? '';
+    const taxInvoice = parsed.data.taxInvoice ?? '';
+    const note = parsed.data.note ?? '';
     const slipUrl = buildSlipUrl(base, msg.id);
     const sales = req.agent?.name ?? '';
+
+    // Anti-tamper signal, now a dormant backstop: with the amount server-enforced above this
+    // can only fire when slipAmount is EMPTY (never) — kept as defense-in-depth should the
+    // enforcement ever be relaxed. Compared post-normalization to avoid formatting false flags.
+    const ocrAmount = msg.slipAmount ?? '';
+    const corrected = !!ocrAmount && normalizeAmount(ocrAmount) !== amount;
+
+    // Juno: the Payment row is the record of truth (the sheet below is a mirror). Upsert on
+    // slipMessageId so a retry after a failed sheet post updates the same row instead of
+    // duplicating. If this write fails the forward fails — staff retry; never silent.
+    try {
+      await prisma.payment.upsert({
+        where: { slipMessageId: msg.id },
+        create: {
+          customerId: customer.id,
+          customerCode: customer.code ?? '',
+          customerName: nickname,
+          senderName: realName,
+          amount, ocrAmount, bank, transferAt, ref,
+          slipMessageId: msg.id,
+          slipUrl,
+          taxInvoice,
+          taxInvoiceStatus: taxInvoice ? 'requested' : 'none',
+          salesAgentId: req.agent?.id ?? null,
+          salesName: sales,
+          note,
+          status: 'received',
+          flagged: corrected,
+        },
+        // Refresh only Minerva-sourced fields; never touch Juno-owned lifecycle fields
+        // (status/verifiedById/verifiedAt) on a retry.
+        update: {
+          customerCode: customer.code ?? '',
+          customerName: nickname,
+          senderName: realName,
+          amount, ocrAmount, bank, transferAt, ref,
+          slipUrl,
+          taxInvoice,
+          taxInvoiceStatus: taxInvoice ? 'requested' : 'none',
+          salesAgentId: req.agent?.id ?? null,
+          salesName: sales,
+          note,
+          flagged: corrected,
+        },
+      });
+    } catch (err) {
+      req.log.error({ err, messageId: msg.id }, 'juno payment write failed');
+      return reply.code(500).send({ error: 'payment_record_failed' });
+    }
+
     const result = await sendToFinance({
       code: customer.code ?? '',
       nickname,
       realName,
       amount,
-      bank: parsed.data.bank ?? '',
-      transferAt: normalizeSlipDate(parsed.data.transferAt ?? ''),
-      ref: parsed.data.ref ?? '',
-      taxInvoice: parsed.data.taxInvoice ?? '',
-      note: parsed.data.note ?? '',
+      bank,
+      transferAt,
+      ref,
+      taxInvoice,
+      note,
       slipUrl,
       sales,
     });
     if (!result.ok) return reply.code(502).send({ error: 'finance_send_failed', detail: result.error });
 
-    // Anti-tamper audit: the OCR amount is server-stored (sales can't influence it). If the
-    // staff submitted a DIFFERENT amount, log it to Minerva's DB (NOT a sheet sales can edit)
-    // — surfaced only to supervisors for verification.
-    const ocrAmount = msg.slipAmount ?? '';
-    const corrected = !!ocrAmount && ocrAmount !== amount;
+    // FinanceAudit: NOT a sheet sales can edit — surfaced only to supervisors for verification.
     if (corrected) {
       const diff = (parseFloat(amount || '0') - parseFloat(ocrAmount || '0')).toFixed(2);
       await prisma.financeAudit.create({
@@ -217,6 +275,7 @@ export async function messageRoutes(app: FastifyInstance) {
     }
 
     const updated = await prisma.message.update({ where: { id: msg.id }, data: { financeSentAt: new Date() } });
+    pushToConsole('finance:sent', { messageId: msg.id });
     return { ok: true, financeSentAt: updated.financeSentAt, corrected };
   });
 

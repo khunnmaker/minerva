@@ -273,12 +273,22 @@ function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClo
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState('');
   const [ocrAmount, setOcrAmount] = useState(''); // server-truth amount read off the slip
-  const [f, setF] = useState({ nickname: '', realName: '', amount: '', bank: '', transferAt: '', ref: '', taxInvoice: '', note: '' });
+  const [f, setF] = useState({ nickname: '', code: '', realName: '', amount: '', bank: '', transferAt: '', ref: '', taxInvoice: '', note: '' });
+  // Slip fields the OCR filled are LOCKED (the slip is the source of truth — staff must not
+  // alter money data; a mis-read is corrected by finance against the slip image, not here).
+  // A field the OCR left blank stays editable, otherwise an unreadable slip couldn't be sent.
+  const [locked, setLocked] = useState({ realName: false, amount: false, bank: false, transferAt: false, ref: false });
 
   useEffect(() => {
     let cancelled = false;
     readSlip(messageId)
-      .then((r) => { if (!cancelled) { setF((p) => ({ ...p, ...r })); setOcrAmount(r.amount); } })
+      .then((r) => {
+        if (!cancelled) {
+          setF((p) => ({ ...p, ...r }));
+          setOcrAmount(r.amount);
+          setLocked({ realName: !!r.realName, amount: !!r.amount, bank: !!r.bank, transferAt: !!r.transferAt, ref: !!r.ref });
+        }
+      })
       .catch(() => undefined)
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -291,6 +301,7 @@ function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClo
     setSending(true); setErr('');
     try {
       const res = await sendToFinance(messageId, { amount: f.amount, bank: f.bank, transferAt: f.transferAt, ref: f.ref, nickname: f.nickname, realName: f.realName, taxInvoice: f.taxInvoice, note: f.note });
+      if (res.alreadySent) { setErr('ส่งให้การเงินไปแล้ว'); onSent(false); return; }
       if (!res.ok) { setErr('ส่งให้การเงินไม่สำเร็จ: ' + (res.error ?? '')); return; }
       onSent(res.corrected ?? false);
     } catch { setErr('ส่งให้การเงินไม่สำเร็จ'); } finally { setSending(false); }
@@ -310,13 +321,15 @@ function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClo
         <div className="font-semibold text-slate-800 flex items-center gap-1.5"><Banknote size={17} className="text-amber-600" /> แจ้งการเงิน</div>
         {loading && <div className="text-xs text-slate-400 flex items-center gap-1"><Loader2 size={13} className="animate-spin" /> กำลังอ่านสลิป…</div>}
         <div className="grid grid-cols-2 gap-2">
+          {field('รหัสลูกค้า', 'code', '—', true)}
           {field('ชื่อ', 'nickname', '', true)}
-          {field('ชื่อผู้โอน', 'realName', 'ชื่อผู้โอน')}
-          {field('จำนวนเงิน', 'amount', 'เช่น 1500')}
-          {field('บัญชีที่รับเงิน', 'bank', 'กสิกร / ไทยพาณิชย์')}
-          {field('วันเวลาโอน', 'transferAt', '27/06/2026 14:30')}
-          {field('เลขอ้างอิง', 'ref', '')}
+          {field('ชื่อผู้โอน', 'realName', 'ชื่อผู้โอน', locked.realName)}
+          {field('จำนวนเงิน', 'amount', 'เช่น 1500', locked.amount)}
+          {field('บัญชีที่รับเงิน', 'bank', 'กสิกร / ไทยพาณิชย์', locked.bank)}
+          {field('วันเวลาโอน', 'transferAt', '27/06/2026 14:30', locked.transferAt)}
+          {field('เลขอ้างอิง', 'ref', '', locked.ref)}
         </div>
+        <div className="text-[10px] text-slate-400 leading-snug">ข้อมูลที่อ่านได้จากสลิปถูกล็อกไว้ แก้ไขไม่ได้ — การเงินจะตรวจกับสลิปจริงอีกครั้ง</div>
         <label className="block">
           <span className="text-[11px] text-slate-500">ใบกำกับภาษี (ชื่อ / ที่อยู่ / เลขผู้เสียภาษี)</span>
           <textarea value={f.taxInvoice} onChange={(e) => setF({ ...f, taxInvoice: e.target.value })} rows={3}
@@ -1233,6 +1246,9 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                                   className="mt-1 text-[10px] px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 font-medium flex items-center gap-1">
                                   <Banknote size={12} /> แจ้งการเงิน
                                 </button>
+                          )}
+                          {m.role !== 'customer' && m.agentName && (
+                            <div className="text-[10px] text-sky-100/80 text-right mt-1">— {m.agentName}</div>
                           )}
                         </div>
                       </div>

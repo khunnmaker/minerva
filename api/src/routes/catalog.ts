@@ -6,7 +6,7 @@ import { requireAuth } from '../auth/middleware.js';
 import { CATALOG_PRODUCTS } from '../catalog/catalogData.js';
 import { findProducts, searchProducts } from '../catalog/match.js';
 import { buildDraftPrompt } from '../llm/prompt.js';
-import { callClaude } from '../llm/anthropic.js';
+import { callClaude, getLastCacheStats } from '../llm/anthropic.js';
 import { parseDraft } from '../llm/parser.js';
 import { applyGuardrails } from '../llm/guardrails.js';
 import { PRODUCT_PHOTO_DIR } from './content.js';
@@ -41,7 +41,7 @@ export async function catalogRoutes(app: FastifyInstance) {
     const mainRaw = (req.body as { mainSkus?: unknown }).mainSkus;
     const mainSkus = Array.isArray(mainRaw) ? mainRaw.filter((s): s is string => typeof s === 'string') : [];
     const agentText = String((req.body as { agentText?: string }).agentText ?? '').trim() || undefined;
-    const kb = await prisma.kbEntry.findMany({ where: { status: 'active' } });
+    const kb = await prisma.kbEntry.findMany({ where: { status: 'active' }, orderBy: { id: 'asc' } }); // stable order = cacheable KB block
     const products = await findProducts(q);
     const confirmedProducts = mainSkus.length
       ? (await prisma.product.findMany({ where: { sku: { in: mainSkus } } })).map((p) => ({
@@ -58,7 +58,9 @@ export async function catalogRoutes(app: FastifyInstance) {
       parsed.used_kb.map((s) => s.toLowerCase()).includes(k.id.toLowerCase()),
     );
     const guarded = applyGuardrails(parsed, q, citedKb, grounded, groundedStock);
-    return { matched: products, confirmed: confirmedProducts, result: guarded.result, reason: guarded.reason, stage: parsed.stage };
+    // cacheStats: token breakdown of the draft call just made (diagnostic — verifies the
+    // prompt-cache split is actually hitting: warm calls show cacheRead > 0).
+    return { matched: products, confirmed: confirmedProducts, result: guarded.result, reason: guarded.reason, stage: parsed.stage, cacheStats: getLastCacheStats() };
   });
 
   // Quick health/visibility of the imported catalog.

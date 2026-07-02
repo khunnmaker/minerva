@@ -168,7 +168,7 @@ export async function dianaRoutes(app: FastifyInstance) {
   });
 
   // ── Clinic registration + login ───────────────────────────────────────────
-  app.post('/api/diana/register', async (req, reply) => {
+  app.post('/api/diana/register', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
     const parsed = registerBody.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
     const { email, password, clinicName, contactName, phone } = parsed.data;
@@ -234,7 +234,7 @@ export async function dianaRoutes(app: FastifyInstance) {
   );
 
   // ── APPROVED-clinic: order-request flow ───────────────────────────────────
-  app.post('/api/diana/orders', { preHandler: requireApprovedClinic }, async (req, reply) => {
+  app.post('/api/diana/orders', { preHandler: requireApprovedClinic, config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
     const parsed = orderBody.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
     const clinic = req.clinic!;
@@ -297,6 +297,7 @@ export async function dianaRoutes(app: FastifyInstance) {
     const clinics = await prisma.clinicAccount.findMany({
       where: parsed.data.status ? { status: parsed.data.status } : undefined,
       orderBy: { createdAt: 'desc' },
+      take: 200,
       select: {
         id: true, email: true, clinicName: true, contactName: true, phone: true, status: true,
         customerCode: true, approvedAt: true, approvedBy: true, rejectNote: true,
@@ -351,6 +352,7 @@ export async function dianaRoutes(app: FastifyInstance) {
     const orders = await prisma.webOrder.findMany({
       where: parsed.data.status ? { status: parsed.data.status } : undefined,
       orderBy: { createdAt: 'desc' },
+      take: 200,
       include: {
         lines: true,
         clinicAccount: { select: { id: true, clinicName: true, email: true, customerCode: true } },

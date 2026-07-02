@@ -4,13 +4,16 @@ import {
   Loader2, AlertTriangle, CheckCircle2, X, RefreshCw, ExternalLink, Ban,
 } from 'lucide-react';
 import {
-  getSummary, getPayments, setStatus, setFlag, setTaxInvoice, getReport, downloadCsv, baht,
+  getSummary, getPayments, setStatus, setFlag, getReport, downloadCsv, baht,
   clearSession,
-  type Agent, type Payment, type PaymentStatus, type TaxStatus, type Summary,
+  type Agent, type Payment, type PaymentStatus, type Summary,
   type Report, type PaymentFilter,
 } from './lib/api';
 
-type View = 'inbox' | 'flags' | 'tax' | 'reports';
+// No ใบกำกับภาษี tab: Prominent issues a tax invoice on EVERY sale (in Express, as part of
+// recording), so a "requested" queue would contain everything and filter nothing. The invoice
+// details captured off the slip flow (name/address/tax-ID) still show in the drawer.
+type View = 'inbox' | 'flags' | 'reports';
 
 // Thai-locale date/time display for the inbox + drawer (house pattern, vulcan/src/Stock.tsx).
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: '2-digit' });
@@ -22,12 +25,6 @@ const STATUS_META: Record<PaymentStatus, { label: string; cls: string }> = {
   recorded: { label: 'บันทึกแล้ว', cls: 'bg-emerald-100 text-emerald-700' },
   void: { label: 'ยกเลิก', cls: 'bg-slate-200 text-slate-500 line-through' },
 };
-const TAX_META: Record<TaxStatus, { label: string; cls: string }> = {
-  none: { label: '—', cls: 'text-slate-400' },
-  requested: { label: 'ขอแล้ว', cls: 'bg-amber-100 text-amber-700' },
-  issued: { label: 'ออกแล้ว', cls: 'bg-emerald-100 text-emerald-700' },
-};
-
 function Badge({ children, cls }: { children: React.ReactNode; cls: string }) {
   return <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${cls}`}>{children}</span>;
 }
@@ -44,7 +41,6 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
   const tabs: { key: View; label: string; icon: React.ReactNode; count?: number }[] = [
     { key: 'inbox', label: 'รายการรับเงิน', icon: <Inbox size={16} />, count: summary?.total },
     { key: 'flags', label: 'ตรวจสอบยอด', icon: <Flag size={16} />, count: summary?.flagged },
-    { key: 'tax', label: 'ใบกำกับภาษี', icon: <FileText size={16} />, count: summary?.taxRequested },
     { key: 'reports', label: 'รายงาน', icon: <BarChart3 size={16} /> },
   ];
 
@@ -93,7 +89,7 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
   );
 }
 
-// ── Payments list + detail (inbox / flags / tax share this) ────────────────
+// ── Payments list + detail (inbox / flags share this) ──────────────────────
 function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports'>; onChanged: () => void }) {
   const [q, setQ] = useState('');
   const [status, setStatusFilter] = useState<'all' | PaymentStatus>('all');
@@ -108,9 +104,8 @@ function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports'>; onC
     q: q.trim() || undefined,
     from: from || undefined,
     to: to || undefined,
-    // the flag/tax tabs are pre-filtered queues; the inbox honours the status dropdown
+    // the flags tab is a pre-filtered queue; the inbox honours the status dropdown
     ...(view === 'flags' ? { flagged: true } : {}),
-    ...(view === 'tax' ? { tax: 'requested' as const } : {}),
     ...(view === 'inbox' ? { status } : {}),
   };
 
@@ -140,8 +135,8 @@ function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports'>; onC
   // Reflect a drawer action back into the list + selected row without a full reload.
   function applyUpdate(p: Payment) {
     setSelected(p);
-    // a row may drop out of a pre-filtered queue (unflagged / tax issued) → refetch those
-    if ((view === 'flags' && !p.flagged) || (view === 'tax' && p.taxInvoiceStatus !== 'requested')) {
+    // a row may drop out of the pre-filtered flag queue (unflagged) → refetch it
+    if (view === 'flags' && !p.flagged) {
       load();
     } else {
       setRows((prev) => prev.map((r) => (r.id === p.id ? p : r)));
@@ -384,49 +379,17 @@ function Detail({ payment, onClose, onUpdate }: {
           </button>
         </div>
 
-        {/* tax invoice — always shown: the common case is the customer asking for it days
-            after the slip was forwarded, not just at forward time */}
-        <div className="px-4 py-3 border-t border-slate-100">
-          <div className="text-xs text-slate-400 mb-1.5 flex items-center gap-1">
-            <FileText size={13} /> ใบกำกับภาษี · <Badge cls={TAX_META[p.taxInvoiceStatus].cls}>{TAX_META[p.taxInvoiceStatus].label}</Badge>
-          </div>
-          {p.taxInvoice && (
-            <div className="p-2 mb-2 rounded-lg bg-slate-50 text-slate-600 text-xs whitespace-pre-wrap">{p.taxInvoice}</div>
-          )}
-          {p.taxInvoiceStatus === 'none' ? (
-            <button
-              disabled={busy !== ''}
-              onClick={() => run('taxreq', () => setTaxInvoice(p.id, 'requested'))}
-              className="w-full px-3 py-1.5 rounded-lg text-sm font-medium border border-slate-300 hover:bg-slate-50 disabled:opacity-40 flex items-center justify-center gap-1"
-            >
-              {busy === 'taxreq' ? <Loader2 size={14} className="animate-spin" /> : 'ขอใบกำกับภาษี'}
-            </button>
-          ) : (
-            <div className="flex gap-1.5 items-center">
-              {(['requested', 'issued'] as TaxStatus[]).map((s) => (
-                <button
-                  key={s}
-                  disabled={busy !== '' || p.taxInvoiceStatus === s}
-                  onClick={() => run('tax' + s, () => setTaxInvoice(p.id, s))}
-                  className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border disabled:opacity-40 ${
-                    p.taxInvoiceStatus === s ? 'bg-emerald-600 text-white border-emerald-600' : 'border-slate-300 hover:bg-slate-50'
-                  }`}
-                >
-                  {busy === 'tax' + s ? <Loader2 size={13} className="animate-spin" /> : TAX_META[s].label}
-                </button>
-              ))}
-              {p.taxInvoiceStatus === 'requested' && (
-                <button
-                  disabled={busy !== ''}
-                  onClick={() => run('taxnone', () => setTaxInvoice(p.id, 'none'))}
-                  className="px-2 py-1 text-xs text-slate-400 hover:text-rose-600 underline disabled:opacity-40"
-                >
-                  ยกเลิกคำขอ
-                </button>
-              )}
+        {/* tax-invoice DETAILS only (no status tracking): every sale gets a ใบกำกับภาษี,
+            issued in Express as part of recording — but the name/address/tax-ID the customer
+            supplied still matters when issuing, so show it whenever it was captured. */}
+        {p.taxInvoice && (
+          <div className="px-4 py-3 border-t border-slate-100">
+            <div className="text-xs text-slate-400 mb-1.5 flex items-center gap-1">
+              <FileText size={13} /> ข้อมูลใบกำกับภาษีจากลูกค้า
             </div>
-          )}
-        </div>
+            <div className="p-2 rounded-lg bg-slate-50 text-slate-600 text-xs whitespace-pre-wrap">{p.taxInvoice}</div>
+          </div>
+        )}
       </div>
     </div>
   );

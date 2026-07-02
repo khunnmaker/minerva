@@ -37,6 +37,39 @@ function buildSystemBlocks(system: SystemPrompt): string | TextBlockParam[] {
   return blocks;
 }
 
+// Cache observability: token breakdown of the most recent call, and a per-call log line so
+// hit rates are visible in the deploy logs (docs: "regularly analyze cache hit rates").
+// A healthy warm call shows a large cacheRead and a small uncachedIn; cacheRead stuck at 0
+// means the prefix is silently NOT caching (below the model's minimum, or byte-unstable).
+export interface CacheStats {
+  uncachedIn: number; // input tokens after the last cache breakpoint (billed full price)
+  cacheRead: number; // tokens read from cache (billed ~10%)
+  cacheWrite: number; // tokens written to cache (billed 125%)
+  out: number;
+}
+let lastCacheStats: CacheStats | null = null;
+export function getLastCacheStats(): CacheStats | null {
+  return lastCacheStats;
+}
+
+function recordUsage(usage: {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+}): void {
+  lastCacheStats = {
+    uncachedIn: usage.input_tokens,
+    cacheRead: usage.cache_read_input_tokens ?? 0,
+    cacheWrite: usage.cache_creation_input_tokens ?? 0,
+    out: usage.output_tokens,
+  };
+  // eslint-disable-next-line no-console
+  console.log(
+    `[llm] in=${lastCacheStats.uncachedIn} cache_read=${lastCacheStats.cacheRead} cache_write=${lastCacheStats.cacheWrite} out=${lastCacheStats.out}`,
+  );
+}
+
 // Single-shot completion. Optional system prompt keeps trusted rules separate
 // from untrusted user/customer content. Throws if no key or the API errors —
 // callers wrap in try/catch and safe-default to needs_human.
@@ -55,6 +88,7 @@ export async function callClaude(
     messages: [{ role: 'user', content: user }],
   });
 
+  recordUsage(res.usage);
   return res.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
 }
 
@@ -90,5 +124,6 @@ export async function callClaudeWithImage(
     ],
   });
 
+  recordUsage(res.usage);
   return res.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
 }

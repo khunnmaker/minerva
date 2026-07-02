@@ -2,6 +2,7 @@ import { prisma } from './prisma.js';
 import { hashPassword, verifyPassword } from '../auth/password.js';
 import { HISTORY_KB } from '../kb/historyKb.js';
 import { embed, embeddingsAvailable, storeKbEmbedding, kbEmbeddingText, kbTextHash } from '../memory/embeddings.js';
+import { prewarmDraftCache } from '../llm/prewarm.js';
 
 // Canonical staff list — the single source of truth for who can log in.
 // Synced on every boot (see syncStaff): names/roles come from here, passwords
@@ -146,6 +147,10 @@ export async function ensureSeeded(): Promise<void> {
 
     // Populate any missing KB embeddings in the background (never blocks boot/readiness).
     void backfillKbEmbeddings();
+
+    // Pre-warm the draft prompt cache so the first post-deploy draft reads a warm cache
+    // instead of paying the write premium (single shot, best-effort — see prewarm.ts).
+    void prewarmDraftCache();
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[seed] ensureSeeded failed', err);

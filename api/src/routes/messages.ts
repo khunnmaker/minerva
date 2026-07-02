@@ -184,7 +184,12 @@ export async function messageRoutes(app: FastifyInstance) {
     // if neither is stored (e.g. imported with only a code) fetch the live LINE name + cache it.
     const nickname = await resolveCustomerName(customer);
     const realName = parsed.data.realName ?? '';
-    const amount = normalizeAmount(parsed.data.amount ?? '');
+    // Server-enforced amount: when the OCR read a value off the slip, that stored value is the
+    // ONLY amount accepted — the client's value is ignored entirely, so neither the console nor
+    // a direct API call can alter the money figure (the slip fields are also locked in the UI).
+    // The client amount is used only when the OCR could not read the slip. A mis-read slip is
+    // corrected by FINANCE during verification (they see the slip image), not by sales.
+    const amount = msg.slipAmount ? normalizeAmount(msg.slipAmount) : normalizeAmount(parsed.data.amount ?? '');
     const bank = parsed.data.bank ?? '';
     const transferAt = normalizeSlipDate(parsed.data.transferAt ?? '');
     const ref = parsed.data.ref ?? '';
@@ -193,11 +198,11 @@ export async function messageRoutes(app: FastifyInstance) {
     const slipUrl = buildSlipUrl(base, msg.id);
     const sales = req.agent?.name ?? '';
 
-    // Anti-tamper signal: the OCR amount is server-stored (sales can't influence it). If the
-    // staff submitted a DIFFERENT amount, that's `corrected` — flags the Payment row and (below)
-    // logs a FinanceAudit entry. Computed BEFORE the Payment write since the write needs it.
+    // Anti-tamper signal, now a dormant backstop: with the amount server-enforced above this
+    // can only fire when slipAmount is EMPTY (never) — kept as defense-in-depth should the
+    // enforcement ever be relaxed. Compared post-normalization to avoid formatting false flags.
     const ocrAmount = msg.slipAmount ?? '';
-    const corrected = !!ocrAmount && ocrAmount !== amount;
+    const corrected = !!ocrAmount && normalizeAmount(ocrAmount) !== amount;
 
     // Juno: the Payment row is the record of truth (the sheet below is a mirror). Upsert on
     // slipMessageId so a retry after a failed sheet post updates the same row instead of

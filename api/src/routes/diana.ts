@@ -3,7 +3,7 @@ import type { Product, ProductEnrichment } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../db/prisma.js';
 import { hashPassword, verifyPassword, DUMMY_HASH } from '../auth/password.js';
-import { requireAuth } from '../auth/middleware.js';
+import { requireAuth, requireRole } from '../auth/middleware.js';
 import {
   signClinicToken,
   requireClinic,
@@ -168,7 +168,7 @@ export async function dianaRoutes(app: FastifyInstance) {
   });
 
   // ── Clinic registration + login ───────────────────────────────────────────
-  app.post('/api/diana/register', async (req, reply) => {
+  app.post('/api/diana/register', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
     const parsed = registerBody.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
     const { email, password, clinicName, contactName, phone } = parsed.data;
@@ -234,7 +234,7 @@ export async function dianaRoutes(app: FastifyInstance) {
   );
 
   // ── APPROVED-clinic: order-request flow ───────────────────────────────────
-  app.post('/api/diana/orders', { preHandler: requireApprovedClinic }, async (req, reply) => {
+  app.post('/api/diana/orders', { preHandler: requireApprovedClinic, config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
     const parsed = orderBody.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
     const clinic = req.clinic!;
@@ -288,14 +288,16 @@ export async function dianaRoutes(app: FastifyInstance) {
     },
   );
 
-  // ── STAFF admin: clinic approval ──────────────────────────────────────────
+  // ── STAFF admin: clinic approval (SUPERVISOR only — approval unlocks pricing,
+  //    and the list carries clinic PII; mirrors the supervisor gate on stock.ts) ──
   const adminClinicsQuery = z.object({ status: z.enum(['pending', 'approved', 'rejected']).optional() });
-  app.get('/api/diana/admin/clinics', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/api/diana/admin/clinics', { preHandler: [requireAuth, requireRole('supervisor')] }, async (req, reply) => {
     const parsed = adminClinicsQuery.safeParse(req.query);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_query' });
     const clinics = await prisma.clinicAccount.findMany({
       where: parsed.data.status ? { status: parsed.data.status } : undefined,
       orderBy: { createdAt: 'desc' },
+      take: 200,
       select: {
         id: true, email: true, clinicName: true, contactName: true, phone: true, status: true,
         customerCode: true, approvedAt: true, approvedBy: true, rejectNote: true,
@@ -308,7 +310,7 @@ export async function dianaRoutes(app: FastifyInstance) {
   const approveBody = z.object({ customerCode: z.string().trim().max(40).optional() });
   app.post<{ Params: { id: string } }>(
     '/api/diana/admin/clinics/:id/approve',
-    { preHandler: requireAuth },
+    { preHandler: [requireAuth, requireRole('supervisor')] },
     async (req, reply) => {
       const parsed = approveBody.safeParse(req.body ?? {});
       if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
@@ -328,7 +330,7 @@ export async function dianaRoutes(app: FastifyInstance) {
   const rejectBody = z.object({ note: z.string().trim().max(500).default('') });
   app.post<{ Params: { id: string } }>(
     '/api/diana/admin/clinics/:id/reject',
-    { preHandler: requireAuth },
+    { preHandler: [requireAuth, requireRole('supervisor')] },
     async (req, reply) => {
       const parsed = rejectBody.safeParse(req.body ?? {});
       if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
@@ -342,6 +344,24 @@ export async function dianaRoutes(app: FastifyInstance) {
     },
   );
 
+  // SUPERVISOR only: permanently delete a clinic account and all its orders.
+  // Intended for clearing test accounts. WebOrderLine cascades from WebOrder, so we
+  // delete the clinic's orders first (WebOrder has onDelete: Restrict to ClinicAccount),
+  // then the account — both in one transaction.
+  app.delete<{ Params: { id: string } }>(
+    '/api/diana/admin/clinics/:id',
+    { preHandler: [requireAuth, requireRole('supervisor')] },
+    async (req, reply) => {
+      const exists = await prisma.clinicAccount.findUnique({ where: { id: req.params.id } });
+      if (!exists) return reply.code(404).send({ error: 'not_found' });
+      await prisma.$transaction([
+        prisma.webOrder.deleteMany({ where: { clinicAccountId: req.params.id } }),
+        prisma.clinicAccount.delete({ where: { id: req.params.id } }),
+      ]);
+      return { ok: true };
+    },
+  );
+
   // ── STAFF admin: order queue ──────────────────────────────────────────────
   const adminOrdersQuery = z.object({ status: z.enum(['submitted', 'confirmed', 'invoiced', 'cancelled']).optional() });
   app.get('/api/diana/admin/orders', { preHandler: requireAuth }, async (req, reply) => {
@@ -350,6 +370,7 @@ export async function dianaRoutes(app: FastifyInstance) {
     const orders = await prisma.webOrder.findMany({
       where: parsed.data.status ? { status: parsed.data.status } : undefined,
       orderBy: { createdAt: 'desc' },
+      take: 200,
       include: {
         lines: true,
         clinicAccount: { select: { id: true, clinicName: true, email: true, customerCode: true } },

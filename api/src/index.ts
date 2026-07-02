@@ -62,7 +62,7 @@ async function buildServer() {
   await app.register(rateLimit, { global: false });
 
   await app.register(cors, {
-    origin: env.WEB_ORIGIN === '*' ? true : env.WEB_ORIGIN.split(','),
+    origin: env.WEB_ORIGIN === '*' ? true : env.WEB_ORIGIN.split(',').map((s) => s.trim().replace(/\/$/, '')).filter(Boolean),
     credentials: true,
   });
 

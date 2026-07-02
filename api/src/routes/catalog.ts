@@ -73,24 +73,36 @@ export async function catalogRoutes(app: FastifyInstance) {
     return { total, priced, withPhoto };
   });
 
-  // Supervisor-only: wipe + re-import the bundled catalog (after data fixes /
-  // re-extraction). Lets us refresh prices without clobbering on every boot.
+  // Supervisor-only: re-import the bundled catalog (after data fixes / re-extraction).
+  // UPSERTS catalog fields per SKU — never deletes — so Vulcan-owned data
+  // (stock/stockAt/reorderPoint) and any product absent from the bundle survive
+  // a price refresh.
   app.post('/api/catalog/reimport', async (req, reply) => {
     if (req.agent?.role !== 'supervisor') return reply.code(403).send({ error: 'forbidden' });
-    await prisma.product.deleteMany({});
-    const data = CATALOG_PRODUCTS.map((p) => ({
-      sku: p.sku,
-      nameEn: p.nameEn,
-      nameTh: p.nameTh,
-      price: p.price,
-      promo: p.promo,
-      note: p.note,
-      page: p.page ?? null,
-      photoSku: p.photoSku ?? null,
-      keywords: p.keywords,
-    }));
-    const res = await prisma.product.createMany({ data, skipDuplicates: true });
-    return { ok: true, imported: res.count };
+    const CHUNK = 50;
+    let imported = 0;
+    for (let i = 0; i < CATALOG_PRODUCTS.length; i += CHUNK) {
+      const slice = CATALOG_PRODUCTS.slice(i, i + CHUNK);
+      await Promise.all(
+        slice.map((p) =>
+          prisma.product.upsert({
+            where: { sku: p.sku },
+            update: {
+              nameEn: p.nameEn, nameTh: p.nameTh, price: p.price, promo: p.promo,
+              note: p.note, page: p.page ?? null, photoSku: p.photoSku ?? null,
+              keywords: p.keywords,
+            },
+            create: {
+              sku: p.sku, nameEn: p.nameEn, nameTh: p.nameTh, price: p.price,
+              promo: p.promo, note: p.note, page: p.page ?? null,
+              photoSku: p.photoSku ?? null, keywords: p.keywords,
+            },
+          }),
+        ),
+      );
+      imported += slice.length;
+    }
+    return { ok: true, imported };
   });
 
   // Supervisor-only: upload a product photo (base64 PNG) to the persistent volume,

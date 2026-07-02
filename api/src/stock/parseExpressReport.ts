@@ -12,6 +12,13 @@ import iconv from 'iconv-lite';
 // rounding tolerance; cost/value go negative when oversold/below-cost). Numbers are
 // always clean ASCII even where the Thai is mojibake, so this is robust.
 //
+// When the invariant doesn't resolve it, a [x, 0, 0] tail (cost 0, value 0) is
+// ambiguous — it could be "qty=x in stock, cost 0" OR a qty-0 line whose name happens
+// to end in a number x. We don't guess: that shape is flagged unresolved for human
+// review instead of silently picking a side. Unambiguous zero-qty shapes (qty column
+// itself is the printed 0, or a nonzero number sits right before a 0/negative value)
+// are still resolved automatically.
+//
 // Per-SKU sub-lines ("02 คลังหน้าร้าน 58.00", "ยอดยกไป…E … F") and page headers don't
 // start with a dd-dd-n SKU code, so they're skipped by skuRe.
 
@@ -25,6 +32,7 @@ export interface ParseResult {
   rows: ParsedStockRow[]; // one per unique SKU (last occurrence wins)
   lineCount: number; // SKU lines seen
   unresolved: number; // SKU lines we couldn't extract a qty from
+  unresolvedSamples: string[]; // up to 5 raw offending lines, for human review
 }
 
 const SKU_RE = /^\s*(\d{2}-\d{2}-\d+)\s+(.*)$/;
@@ -48,6 +56,10 @@ export function parseExpressReport(text: string): ParseResult {
   const bySku = new Map<string, ParsedStockRow>();
   let lineCount = 0;
   let unresolved = 0;
+  const unresolvedSamples: string[] = [];
+  const sample = (line: string) => {
+    if (unresolvedSamples.length < 5) unresolvedSamples.push(line.trim().slice(0, 100));
+  };
 
   for (const line of lines) {
     const m = line.match(SKU_RE);
@@ -62,6 +74,7 @@ export function parseExpressReport(text: string): ParseResult {
     const nums = matches.map((x) => toNum(x[0])).filter((n) => !Number.isNaN(n));
     if (!nums.length) {
       unresolved++;
+      sample(line);
       continue;
     }
 
@@ -77,16 +90,28 @@ export function parseExpressReport(text: string): ParseResult {
         qtyIdx = nums.length - 3;
       }
     }
-    if (qty === null && nums.length >= 2 && last <= 0) {
-      qty = nums[nums.length - 2]; // value 0/negative → qty sits right before it
+    // Ambiguous [x, 0, 0] tail: could be "qty=x, cost 0, value 0" (x in stock) OR a
+    // qty-0 line whose name ends in a number. Both satisfy the arithmetic — don't
+    // guess; flag for human review via the unresolved count in the preview.
+    if (qty === null && nums.length >= 3 && nums[nums.length - 2] === 0 && last === 0 && nums[nums.length - 3] !== 0) {
+      unresolved++;
+      sample(line);
+      continue;
+    }
+    // "… 0.00 <unit> <cost-or-negative-value>" — qty is the zero itself.
+    if (qty === null && nums.length >= 2 && nums[nums.length - 2] === 0) {
+      qty = 0;
       qtyIdx = nums.length - 2;
     }
-    if (qty === null && nums.length >= 2 && nums[nums.length - 2] === 0) {
-      qty = 0; // "name 0.00 unit cost" — qty 0, value omitted → out of stock
+    // value 0/negative with a nonzero number before it → that number is the qty
+    // (cost column omitted on these lines in the real report).
+    if (qty === null && nums.length >= 2 && last <= 0) {
+      qty = nums[nums.length - 2];
       qtyIdx = nums.length - 2;
     }
     if (qty === null) {
       unresolved++;
+      sample(line);
       continue;
     }
 
@@ -98,5 +123,5 @@ export function parseExpressReport(text: string): ParseResult {
     bySku.set(sku, { sku, name, qty: Math.round(qty) });
   }
 
-  return { rows: [...bySku.values()], lineCount, unresolved };
+  return { rows: [...bySku.values()], lineCount, unresolved, unresolvedSamples };
 }

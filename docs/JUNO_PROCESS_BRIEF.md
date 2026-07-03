@@ -164,20 +164,197 @@ sets status 'verified' outside the verify route.
 
 ---
 
-# PHASE B — bank import + reconciliation (spec to follow; do NOT build yet)
+# PHASE B — bank import + reconciliation (FULL SPEC; build on top of Phase A)
 
-Outline agreed with the owner (for context only):
-- New tables `BankTxn` + `BankImport` (ADD-only). Import UI: upload the twice-weekly
-  KBIZ CSV and K SHOP report; preview → apply (Vulcan's import pattern); dedupe
-  re-uploaded overlapping ranges by content hash; auto-exclude negative amounts,
-  balance/header rows, and the nightly `EDC/K SHOP/MYQR` settlement lump.
-- KBIZ CSV format confirmed from a real sample ("K-DEPOSIT STATEMENT" header block; rows
-  Date DD-MM-YY, Time, Descriptions, Withdrawal, Deposit, Balance, Channel, Details;
-  quoted comma amounts). K SHOP raw export format PENDING a sample file from the owner.
-- Matcher: auto-match checked payments (reNumber set) to credit lines by exact amount +
-  same/adjacent Thai day, with sender-name similarity as a tiebreaker; many-to-many UI
-  (select several payments for one line, several lines for one RE) for the rest; manual
-  ref text (cheque no. / บิล / Shopee) on lines with no Payment.
-- กระทบยอด tab: unmatched bank credits · checked-but-unmatched payments · matched
-  pending Express-confirm, with weekend bulk-confirm (sets Payment → ยืนยันใน Express
-  and stamps the line).
+Real sample files (owner's actual exports, on the build machine — use for testing, do
+NOT commit them): `C:\Users\khunn\Downloads\Bank\KBiz.csv` and
+`C:\Users\khunn\Downloads\Bank\KShop.csv`.
+
+## B0. File formats (confirmed from the real samples)
+
+**K SHOP** (`KShop.csv`, UTF-8 with BOM, LF):
+```
+TRANSACTION REPORT - payment,
+Request Date :,03-07-2026,
+Merchant ID :,KB000001748389,
+Shop Name :,พรอมมิเน้นท์,No. of Payment transaction :,23,
+Shop Owner :,<name>,No. of Void transaction :,0,
+No.,Date Time,Transaction ID,Transaction Type,Amount,From Account,To Account,Source of Fund,Customer,Item,Original Transaction ID,
+1,01-07-2026 09:21:29,EMPKB000001748389004,Payment,8820.00,บจก. เพชรสมุทร,KB000001748389,"TMBThanachart Bank","-",-,EMPKB000001748389004,
+...
+,,,Total (THB),88787.60,
+,,,*ยอดเงินที่แสดง...,
+```
+- Data rows = rows whose first cell is numeric. Footer (Total/note) rows skipped.
+- Date Time `DD-MM-YYYY HH:MM:SS` (Gregorian), Thai local time (+07:00).
+- `From Account` = PAYER NAME (Thai or EN — a strong match signal vs
+  `Payment.senderName`). `Source of Fund` = payer's bank (quoted). K PLUS rows have a
+  numeric Transaction ID with the terminal id in the LAST column; card/QR rows repeat
+  the terminal (EMPKB...003/004/005) in both.
+- `Transaction Type`: `Payment` → income row. `Void` → do NOT store; count as excluded
+  and surface the count in the preview note.
+- Amounts are GROSS (pre-fee/VAT — footer note) → they equal what the customer paid,
+  i.e. they match Payment.amount; the KBIZ settlement lump is net and is excluded anyway.
+
+**KBIZ statement** (`KBiz.csv`; UTF-8; may or may not carry a BOM — handle both; if
+decoding yields U+FFFD, retry as windows-874):
+- Title lines: `รายการเดินบัญชี...` + `K-DEPOSIT STATEMENT OF <SAVING|CURRENT> ACCOUNT
+  (WITH DETAIL)` — accept both account kinds.
+- Header block (Ref/Account incl. a MULTI-LINE quoted address cell/Account Number/
+  Period/Branch/totals) — must be parsed with a real CSV reader that handles quoted
+  newlines; do not split on raw \n.
+- Column header row contains `Date` and `Descriptions` (Time header is `Time/Ent.Date`
+  or `Time/Eff.Date` — don't depend on it). Every data row starts with an EMPTY first
+  cell; fields at indexes: 1=Date `DD-MM-YY` (Gregorian 26→2026), 2=Time `HH:MM` (empty
+  on balance rows), 3=Descriptions, 4=Withdrawal, 6=Deposit, 8=Balance, 10=Channel,
+  12=Details. Amounts quoted with thousands commas.
+- Row handling: skip `Beginning Balance`; **skip rows whose Channel is
+  `EDC/K SHOP/MYQR`** (the nightly K SHOP settlement lump — its detail arrives in the
+  K SHOP file; count as excluded); Deposit-nonempty → direction `in`, else `out`
+  (Withdrawal/Fee/Payment rows). Store `out` rows too (future expenses project) but the
+  recon UI only surfaces `in`.
+- Deposit varieties seen (all direction `in`): Transfer Deposit (`From X####/NAME++` in
+  Details), Cash Deposit (branch channel, `Ref Code ...`), Automatic Deposit
+  (`From SMART <BANK> X#### <INSTITUTION>++` — hospitals etc., no LINE slip),
+  Cheque Deposit (`<BANK> #### Cheque No. ########`).
+- Best-effort extraction from Details for matching: `payerName` = text after the last
+  `X####␣` up to `++`; `payerBank` = token after `From` when it is a known bank code
+  (SCB/KTB/BBL/TTB/BAY/GSB/LHBANK/KK/KBANK...); cheque rows: `refHint` = the cheque no.
+
+## B1. Schema (ADD-only migration `..._juno_bank_recon`, timestamp after Phase A's)
+
+```prisma
+model BankImport {
+  id         String   @id @default(cuid())
+  source     String   // kbiz | kshop
+  fileName   String   @default("")
+  importedAt DateTime @default(now())
+  importedBy String?
+  rowsParsed Int @default(0)
+  txnsNew    Int @default(0)
+  txnsDup    Int @default(0)   // already in DB (overlapping export ranges are NORMAL)
+  txnsExcluded Int @default(0) // K SHOP lump, voids, balance rows
+  note       String @default("")
+}
+model BankTxn {
+  id          String  @id @default(cuid())
+  source      String  // kbiz | kshop
+  txnAt       DateTime
+  amount      String  @default("") // baht "1234.56" (house String style)
+  direction   String  @default("in") // in | out
+  channel     String  @default("")
+  description String  @default("") // KBIZ Descriptions / kshop "Payment"
+  details     String  @default("") // KBIZ Details / kshop payer·bank·terminal
+  payerName   String  @default("")
+  payerBank   String  @default("")
+  dedupeKey   String  @unique // sha256("source|txnAt ISO|amount|details") + "|n" suffix on within-file collisions
+  importId    String
+  matchStatus String  @default("unmatched") // unmatched | matched
+  refText     String  @default("") // manual refs (cheque no. / บิล 38/13 / Shopee / RE list) — setting it marks matched
+  expressConfirmedAt   DateTime?
+  expressConfirmedById String?
+  @@index([txnAt]) @@index([matchStatus]) @@index([direction])
+}
+model PaymentBankMatch {
+  id          String   @id @default(cuid())
+  paymentId   String
+  bankTxnId   String
+  createdAt   DateTime @default(now())
+  createdById String?
+  @@unique([paymentId, bankTxnId])
+  @@index([paymentId]) @@index([bankTxnId])
+}
+```
+Plus on `Payment`: `reconciled Boolean @default(false)` (denormalized: true while ≥1
+match link exists) + `@@index([reconciled])`.
+
+## B2. Parsers — `api/src/bank/parseKbiz.ts`, `api/src/bank/parseKshop.ts`
+
+- Use a small robust CSV tokenizer that handles quoted fields with embedded commas AND
+  newlines (write one ~30-line function; no new deps unless `iconv-lite` is needed for
+  the 874 fallback — it is already a dependency via Vulcan's Express import; reuse).
+- Auto-detect source from content: first line containing `TRANSACTION REPORT` → kshop;
+  `K-DEPOSIT STATEMENT` → kbiz. Reject unknown files with a clear error.
+- Output per row: `{ txnAt: Date, amount: string, direction, channel, description,
+  details, payerName, payerBank }` + per-file counts { parsed, excluded } and the
+  detected period. Timestamps built with explicit `+07:00`.
+- Commit SANITIZED fixtures (6–10 rows each, fake names, structure identical incl. the
+  EDC lump, a Fee, a Cheque Deposit, an Automatic SMART row, a K PLUS kshop row, a Void
+  row, an identical-duplicate pair) under `api/src/bank/fixtures/`, and a runnable check
+  `api/src/scripts/checkBankParsers.ts` (tsx) asserting expected counts/fields on the
+  fixtures, and ALSO parsing the real files from `C:\Users\khunn\Downloads\Bank\` when
+  present (never committed). Run it in verification.
+
+## B3. API (extend `api/src/routes/juno.ts`; all supervisor-gated as today)
+
+- `POST /api/juno/bank/import/preview` `{ dataB64, fileName }` (bodyLimit ~15MB):
+  parse, auto-detect source, compute dedupeKeys, look up existing → return
+  `{ token, source, fileName, periodFrom, periodTo, rows: [{txnAt, amount, direction,
+  channel, payerName, details, isNew}], counts {parsed, new, dup, excluded} }`. Stash
+  like Vulcan's stock preview (TTL + cap).
+- `POST /api/juno/bank/import/apply` `{ token }`: insert new BankTxns + BankImport audit
+  row, then RUN THE AUTO-MATCHER over the new lines; return counts + autoMatched.
+- Auto-matcher (also `POST /api/juno/bank/automatch` to re-run):
+  - candidates: BankTxn `in`+unmatched ↔ Payment `verified`, not void, reconciled=false;
+  - amounts equal (2dp normalize) AND |txnAt − transferAt| ≤ 3 days (parse Payment
+    .transferAt `DD/MM/YYYY HH:MM`; fallback createdAt);
+  - link ONLY when the pairing is unambiguous in BOTH directions (exactly one candidate
+    each way); ties are left for the UI's suggestions. Linking creates PaymentBankMatch,
+    sets txn matched + payment reconciled.
+- `GET /api/juno/bank/txns?status=&dir=in&from=&to=&q=` — list with linked payment
+  summaries (join through PaymentBankMatch); q searches details/payerName/refText/amount.
+- `GET /api/juno/bank/txns/:id/suggestions` — ranked candidate payments: exact-amount
+  first (with day distance), then name-similarity (casefolded substring / token overlap
+  between payerName/details and senderName/customerName/receiptName), then same-day ±
+  small amount delta. Max ~10.
+- `POST /api/juno/bank/txns/:id/match` `{ paymentIds: string[] }` — link several (adds
+  to existing links), each link sets payment.reconciled; txn → matched. Sum mismatch is
+  allowed (fees) — return `{ sumDelta }` for the UI badge.
+- `POST /api/juno/bank/txns/:id/unmatch` `{ paymentId }` — remove link; recompute
+  payment.reconciled and txn.matchStatus (unmatched when no links AND refText='').
+- `POST /api/juno/bank/txns/:id/ref` `{ refText }` — manual reference for non-Payment
+  income (cheque/บิล/Shopee/direct RE numbers); non-empty → matched, empty → recompute.
+- `POST /api/juno/bank/txns/:id/confirm` and `POST /api/juno/bank/confirm-matched`
+  `{ to?: 'YYYY-MM-DD' }` (bulk, the weekend action): stamp expressConfirmedAt/By on
+  matched-unconfirmed `in` lines (≤ to, Thai day) AND advance every linked Payment with
+  status `verified` → `recorded` (ยืนยันใน Express), stamping verifiedBy fields per the
+  existing status route semantics. Payments already recorded are left alone.
+- `GET /api/juno/bank/summary` — cards for the tab: unmatched-in {count,sum},
+  matched-unconfirmed {count,sum}, verified-payments-unreconciled {count,sum,oldestDays},
+  last imports per source.
+- Reports/CSV: unchanged this phase.
+
+## B4. UI — new tab **กระทบยอด** (`juno/src/Recon.tsx`, view 'recon', icon Scale)
+
+- Summary cards (from bank/summary). Badge on the tab = unmatched-in count.
+- **Import panel**: file input (multiple; both files at once), per file → preview modal
+  (source, period, counts new/dup/excluded, first ~50 rows scrollable) → นำเข้า →
+  apply result incl. "จับคู่อัตโนมัติแล้ว n รายการ". Wed/Sat routine = drop 2 files,
+  click twice.
+- **เงินเข้า list** (direction=in): filters สถานะ (ทั้งหมด/ยังไม่จับคู่/จับคู่แล้ว/ยืนยันแล้ว) + date
+  range + search. Row: Thai date-time, amount, channel chip (K BIZ/K PLUS/K SHOP/เช็ค…),
+  payer/details, state. Expand a row →
+  - linked payments as chips `RE 6900123 · ฿2,120 · ชื่อ` (click = open the payment
+    drawer), sum + delta badge when ≠ line amount;
+  - **จับคู่**: suggestion list (one-click add) + search (RE/ชื่อ/จำนวน) with
+    multi-select; running sum vs line amount;
+  - **อ้างอิงอื่น**: free-text refText (เช็คเลขที่… / บิล 38/13 / Shopee) — saves +
+    marks matched;
+  - **ยืนยัน Express** per line (when matched).
+- **ใบเสร็จที่ยังไม่พบเงินเข้า** section (Payments verified + !reconciled, oldest first,
+  age badge ≥7 days red) — the fraud/error watchlist.
+- **Weekend button**: `ยืนยัน Express ทั้งหมดที่จับคู่แล้ว (n)` with a confirm dialog →
+  bulk endpoint → payments flip to ยืนยันใน Express.
+- Keep all list styling consistent with the existing tabs (same table/card classes).
+
+## B5. Verification
+
+- `npx prisma validate && npx prisma generate && npx tsc --noEmit` (api),
+  `npm run build` (juno).
+- `npx tsx api/src/scripts/checkBankParsers.ts` — fixtures pass AND the real
+  `C:\Users\khunn\Downloads\Bank\*.csv` parse with: KShop → 23 payment rows, 0 void;
+  KBiz → 59 deposits total per its header, of which 2 are EDC/K SHOP/MYQR lumps
+  (excluded) — assert the parser's numbers agree with the file's own TOTAL DEPOSIT
+  ITEMS count (59, incl. the 2 excluded lumps) and TOTAL WITHDRAWAL (6).
+- Grep: no `console.error` in new api code (use req.log), `dedupeKey` unique in schema
+  + migration, tab renders behind the existing auth gate.

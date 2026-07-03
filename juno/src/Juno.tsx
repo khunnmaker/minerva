@@ -1,20 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Landmark, LogOut, Search, Download, Flag, FileText, Inbox, BarChart3,
+  Landmark, LogOut, Search, Download, Flag, FileText, Inbox, BarChart3, Scale,
   Loader2, AlertTriangle, CheckCircle2, X, RefreshCw, ExternalLink, Ban, Printer, Pencil,
 } from 'lucide-react';
 import {
   getSummary, getPayments, setStatus, setFlag, verifyPayment, getReport, downloadCsv, baht,
-  clearSession,
+  clearSession, getBankSummary,
   type Agent, type Payment, type PaymentStatus, type Summary,
   type Report, type PaymentFilter, type CustomerType,
 } from './lib/api';
 import PrintCovers from './PrintCovers';
+import Recon from './Recon';
 
 // No ใบกำกับภาษี tab: Prominent issues a tax invoice on EVERY sale (in Express, as part of
 // recording), so a "requested" queue would contain everything and filter nothing. The invoice
 // details captured off the slip flow (name/address/tax-ID) still show in the drawer.
-type View = 'inbox' | 'flags' | 'reports';
+type View = 'inbox' | 'flags' | 'reports' | 'recon';
 
 // Thai-locale date/time display for the inbox + drawer (house pattern, vulcan/src/Stock.tsx).
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: '2-digit' });
@@ -36,15 +37,19 @@ function Badge({ children, cls }: { children: React.ReactNode; cls: string }) {
 export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () => void }) {
   const [view, setView] = useState<View>('inbox');
   const [summary, setSummary] = useState<Summary | null>(null);
+  // unmatched-in bank txn count — the badge on the กระทบยอด tab (phase B)
+  const [bankUnmatched, setBankUnmatched] = useState<number | undefined>(undefined);
 
   const refreshSummary = useCallback(() => {
     getSummary().then(setSummary).catch(() => setSummary(null));
+    getBankSummary().then((s) => setBankUnmatched(s.unmatchedIn.count)).catch(() => setBankUnmatched(undefined));
   }, []);
   useEffect(() => { refreshSummary(); }, [refreshSummary]);
 
   const tabs: { key: View; label: string; icon: React.ReactNode; count?: number }[] = [
     { key: 'inbox', label: 'รายการรับเงิน', icon: <Inbox size={16} />, count: summary?.total },
     { key: 'flags', label: 'ตรวจสอบยอด', icon: <Flag size={16} />, count: summary?.flagged },
+    { key: 'recon', label: 'กระทบยอด', icon: <Scale size={16} />, count: bankUnmatched },
     { key: 'reports', label: 'รายงาน', icon: <BarChart3 size={16} /> },
   ];
 
@@ -75,7 +80,7 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
             >
               {t.icon} {t.label}
               {typeof t.count === 'number' && t.count > 0 && (
-                <span className={`ml-1 px-1.5 rounded-full text-xs ${t.key === 'flags' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
+                <span className={`ml-1 px-1.5 rounded-full text-xs ${t.key === 'flags' || t.key === 'recon' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
                   {t.count}
                 </span>
               )}
@@ -85,16 +90,20 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
       </header>
 
       <main className="max-w-7xl mx-auto p-4">
-        {view === 'reports'
-          ? <Reports />
-          : <PaymentsView view={view} onChanged={refreshSummary} />}
+        {view === 'reports' ? (
+          <Reports />
+        ) : view === 'recon' ? (
+          <Recon />
+        ) : (
+          <PaymentsView view={view} onChanged={refreshSummary} />
+        )}
       </main>
     </div>
   );
 }
 
 // ── Payments list + detail (inbox / flags share this) ──────────────────────
-function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports'>; onChanged: () => void }) {
+function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports' | 'recon'>; onChanged: () => void }) {
   const [q, setQ] = useState('');
   const [status, setStatusFilter] = useState<'all' | PaymentStatus>('all');
   const [from, setFrom] = useState('');

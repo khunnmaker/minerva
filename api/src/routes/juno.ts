@@ -1,12 +1,24 @@
 import type { FastifyInstance } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from '../db/prisma.js';
 import { requireAuth, requireRole } from '../auth/middleware.js';
+import { parseKbiz } from '../bank/parseKbiz.js';
+import { parseKshop } from '../bank/parseKshop.js';
+import { makeUniqueDedupeKeys } from '../bank/dedupe.js';
+import { paymentTimestamp, amountsEqual, dayDistance, nameSimilarity } from '../bank/match.js';
+import type { BankSource, ParsedBankRow } from '../bank/types.js';
+import { BankParseError } from '../bank/types.js';
 
 // Juno finance API. Reads the Payment table (written by Minerva's /to-finance hook) and
 // owns the finance lifecycle: verify → record, flag-queue triage, tax-invoice tracking,
 // and reporting/export. INCOME / LINE-slip only for the MVP. Gated to supervisor for v1
 // (finance logs in as Dr. M — the owner chose to reuse the supervisor role). See JUNO_BRIEF.md.
+//
+// PHASE B (see JUNO_PROCESS_BRIEF.md): bank import (KBIZ + K SHOP) + reconciliation
+// against checked (RE-carrying) Payments. Owner downloads both files every Wed/Sat;
+// Wed/Sat export ranges overlap by design (re-importing the same bank line is a no-op,
+// counted as `dup` via dedupeKey) — see the /bank/import/* routes below.
 
 // Lifecycle Juno owns. `flagged` is a SEPARATE boolean (the flag queue), independent of status.
 const STATUSES = ['received', 'verified', 'recorded', 'void'] as const;
@@ -107,6 +119,139 @@ function buildListWhere(q: z.infer<typeof listFilterSchema>): Record<string, unk
     ];
   }
   return where;
+}
+
+// ── Bank import staging (preview → apply), mirrors Vulcan's stock import pattern ──
+// (see stock.ts) — the manager previews a parsed file, eyeballs the diff, then applies the
+// EXACT parsed set (server-authoritative; the client can't re-send tampered rows). Lost on
+// restart (harmless: just re-upload). Small + short-lived.
+interface StagedBankImport {
+  source: BankSource;
+  fileName: string;
+  rows: ParsedBankRow[];
+  dedupeKeys: string[]; // 1:1 with rows
+  isNew: boolean[]; // 1:1 with rows — precomputed at preview time
+  excluded: number;
+  parsed: number;
+  periodFrom: Date | null;
+  periodTo: Date | null;
+  at: number;
+}
+const BANK_PREVIEW_TTL_MS = 30 * 60 * 1000;
+const bankPreviews = new Map<string, StagedBankImport>();
+function stashBankPreview(s: StagedBankImport): string {
+  const now = Date.now();
+  for (const [k, v] of bankPreviews) if (now - v.at > BANK_PREVIEW_TTL_MS) bankPreviews.delete(k);
+  while (bankPreviews.size >= 10) bankPreviews.delete(bankPreviews.keys().next().value as string);
+  const token = randomUUID();
+  bankPreviews.set(token, s);
+  return token;
+}
+
+// house-String baht formatting for the txn row shape (matches Payment.amount convention).
+function txnAmountNum(amount: string): number {
+  const n = parseFloat((amount || '').replace(/[^\d.-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+// The row shape the Recon UI consumes for a bank line, incl. its linked-payment summaries.
+function toBankTxnRow(
+  t: {
+    id: string; source: string; txnAt: Date; amount: string; direction: string; channel: string;
+    description: string; details: string; payerName: string; payerBank: string; matchStatus: string;
+    refText: string; expressConfirmedAt: Date | null; expressConfirmedById: string | null;
+  },
+  links: { paymentId: string; reNumber: string; receiptName: string; customerName: string; amount: string }[] = [],
+) {
+  const linkedSum = links.reduce((s, l) => s + txnAmountNum(l.amount), 0);
+  return {
+    id: t.id,
+    source: t.source,
+    txnAt: t.txnAt.toISOString(),
+    amount: t.amount,
+    amountNum: txnAmountNum(t.amount),
+    direction: t.direction,
+    channel: t.channel,
+    description: t.description,
+    details: t.details,
+    payerName: t.payerName,
+    payerBank: t.payerBank,
+    matchStatus: t.matchStatus,
+    refText: t.refText,
+    expressConfirmedAt: t.expressConfirmedAt ? t.expressConfirmedAt.toISOString() : null,
+    expressConfirmedById: t.expressConfirmedById,
+    links: links.map((l) => ({ paymentId: l.paymentId, reNumber: l.reNumber, receiptName: l.receiptName, customerName: l.customerName, amount: l.amount })),
+    linkedSum,
+    sumDelta: links.length ? Number((linkedSum - txnAmountNum(t.amount)).toFixed(2)) : null,
+  };
+}
+
+// Recompute + persist a BankTxn's matchStatus from its current link count + refText.
+// unmatched only when BOTH no links exist AND refText is empty (spec §B3 /unmatch).
+async function recomputeTxnMatchStatus(bankTxnId: string): Promise<void> {
+  const [linkCount, txn] = await Promise.all([
+    prisma.paymentBankMatch.count({ where: { bankTxnId } }),
+    prisma.bankTxn.findUnique({ where: { id: bankTxnId }, select: { refText: true } }),
+  ]);
+  const matched = linkCount > 0 || !!txn?.refText;
+  await prisma.bankTxn.update({ where: { id: bankTxnId }, data: { matchStatus: matched ? 'matched' : 'unmatched' } });
+}
+
+// Recompute + persist a Payment's denormalized `reconciled` flag from its current link count.
+async function recomputePaymentReconciled(paymentId: string): Promise<void> {
+  const linkCount = await prisma.paymentBankMatch.count({ where: { paymentId } });
+  await prisma.payment.update({ where: { id: paymentId }, data: { reconciled: linkCount > 0 } });
+}
+
+// The auto-matcher (see spec B3): candidates are BankTxn direction='in'+unmatched ↔
+// Payment status='verified', not void, reconciled=false. Links ONLY when the pairing is
+// unambiguous in BOTH directions (exactly one candidate each way) — everything else is
+// left for the UI's ranked suggestions. Runs over a specific set of new txn ids (import
+// apply) or ALL unmatched in-txns (manual re-run via /bank/automatch). createdById is left
+// null on every link this function creates — a deliberate marker distinguishing "the system
+// auto-matched this" from a FIN-driven manual match (POST /match, which stamps req.agent.id).
+async function runAutoMatcher(txnIds?: string[]): Promise<number> {
+  const [txns, payments] = await Promise.all([
+    prisma.bankTxn.findMany({
+      where: { direction: 'in', matchStatus: 'unmatched', ...(txnIds ? { id: { in: txnIds } } : {}) },
+    }),
+    prisma.payment.findMany({
+      where: { status: 'verified', reconciled: false },
+      select: { id: true, amount: true, transferAt: true, createdAt: true },
+    }),
+  ]);
+  if (!txns.length || !payments.length) return 0;
+
+  const paymentTimes = new Map(payments.map((p) => [p.id, paymentTimestamp(p.transferAt, p.createdAt)]));
+
+  // candidates[txnId] = list of payment ids that pass the amount+day-window rule.
+  const txnCandidates = new Map<string, string[]>();
+  const paymentCandidates = new Map<string, string[]>();
+  for (const t of txns) {
+    const matches: string[] = [];
+    for (const p of payments) {
+      if (!amountsEqual(t.amount, p.amount)) continue;
+      if (dayDistance(t.txnAt, paymentTimes.get(p.id)!) > 3) continue;
+      matches.push(p.id);
+    }
+    txnCandidates.set(t.id, matches);
+    for (const pid of matches) paymentCandidates.set(pid, [...(paymentCandidates.get(pid) ?? []), t.id]);
+  }
+
+  let autoMatched = 0;
+  for (const t of txns) {
+    const matches = txnCandidates.get(t.id) ?? [];
+    if (matches.length !== 1) continue; // ambiguous or no candidate on the txn side
+    const pid = matches[0];
+    if ((paymentCandidates.get(pid) ?? []).length !== 1) continue; // ambiguous on the payment side too
+    await prisma.$transaction([
+      prisma.paymentBankMatch.create({ data: { paymentId: pid, bankTxnId: t.id, createdById: null } }),
+      prisma.bankTxn.update({ where: { id: t.id }, data: { matchStatus: 'matched' } }),
+      prisma.payment.update({ where: { id: pid }, data: { reconciled: true } }),
+    ]);
+    autoMatched++;
+  }
+  return autoMatched;
 }
 
 export async function junoRoutes(app: FastifyInstance) {
@@ -348,5 +493,421 @@ export async function junoRoutes(app: FastifyInstance) {
     reply.header('content-type', 'text/csv; charset=utf-8');
     reply.header('content-disposition', 'attachment; filename="juno-payments.csv"');
     return reply.send('﻿' + lines.join('\r\n'));
+  });
+
+  // ── Phase B: bank import + reconciliation (กระทบยอด) ──────────────────────
+
+  // POST /api/juno/bank/import/preview { dataB64, fileName } — parse an uploaded bank file
+  // (auto-detects KBIZ vs K SHOP), compute dedupeKeys, look up which already exist. NO
+  // writes. Returns a token to apply this exact parsed set. Auth is re-checked here at
+  // onRequest (BEFORE body parsing) — same reasoning as stock.ts's import route: with a
+  // large bodyLimit, preHandler-only auth would let an anonymous client make the server
+  // buffer+parse a multi-MB payload first.
+  app.post('/api/juno/bank/import/preview', {
+    onRequest: [requireAuth, requireRole('supervisor')],
+    bodyLimit: 17 * 1024 * 1024, // ~15MB cap after base64 inflation, plus envelope headroom
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
+    const body = z.object({ dataB64: z.string().min(1), fileName: z.string().max(300).optional() }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'missing_data' });
+    const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+    if (body.data.dataB64.length > Math.ceil((MAX_UPLOAD_BYTES * 4) / 3) + 4) return reply.code(413).send({ error: 'too_large' });
+    const buf = Buffer.from(body.data.dataB64, 'base64');
+    if (!buf.length) return reply.code(400).send({ error: 'empty' });
+    if (buf.length > MAX_UPLOAD_BYTES) return reply.code(413).send({ error: 'too_large' });
+
+    let parsedFile;
+    try {
+      const utf8 = buf.toString('utf8').replace(/^﻿/, '');
+      if (utf8.includes('TRANSACTION REPORT')) parsedFile = parseKshop(utf8);
+      else if (utf8.includes('K-DEPOSIT STATEMENT')) parsedFile = parseKbiz(buf);
+      else return reply.code(422).send({ error: 'unknown_format', detail: 'ไม่รู้จักรูปแบบไฟล์ — ต้องเป็น KBIZ statement หรือ K SHOP transaction report' });
+    } catch (err) {
+      if (err instanceof BankParseError) return reply.code(422).send({ error: err.message });
+      req.log.error({ err }, 'bank import preview: parse failed');
+      return reply.code(422).send({ error: 'parse_failed' });
+    }
+
+    const dedupeKeys = makeUniqueDedupeKeys(
+      parsedFile.rows.map((r) => ({ source: parsedFile!.source, txnAt: r.txnAt, amount: r.amount, details: r.details })),
+    );
+    const existing = await prisma.bankTxn.findMany({
+      where: { dedupeKey: { in: dedupeKeys } },
+      select: { dedupeKey: true },
+    });
+    const existingSet = new Set(existing.map((e) => e.dedupeKey));
+    const isNew = dedupeKeys.map((k) => !existingSet.has(k));
+    const newCount = isNew.filter(Boolean).length;
+
+    const token = stashBankPreview({
+      source: parsedFile.source,
+      fileName: String(body.data.fileName ?? ''),
+      rows: parsedFile.rows,
+      dedupeKeys,
+      isNew,
+      excluded: parsedFile.excluded,
+      parsed: parsedFile.parsed,
+      periodFrom: parsedFile.periodFrom,
+      periodTo: parsedFile.periodTo,
+      at: Date.now(),
+    });
+
+    return {
+      token,
+      source: parsedFile.source,
+      fileName: String(body.data.fileName ?? ''),
+      periodFrom: parsedFile.periodFrom ? parsedFile.periodFrom.toISOString() : null,
+      periodTo: parsedFile.periodTo ? parsedFile.periodTo.toISOString() : null,
+      rows: parsedFile.rows.slice(0, 50).map((r, i) => ({
+        txnAt: r.txnAt.toISOString(),
+        amount: r.amount,
+        direction: r.direction,
+        channel: r.channel,
+        payerName: r.payerName,
+        details: r.details,
+        isNew: isNew[i],
+      })),
+      counts: { parsed: parsedFile.parsed, new: newCount, dup: parsedFile.rows.length - newCount, excluded: parsedFile.excluded },
+    };
+  });
+
+  // POST /api/juno/bank/import/apply { token } — apply a previewed import: insert the NEW
+  // BankTxns (dup rows are skipped — the same reasoning as Vulcan's apply), write a
+  // BankImport audit row, then run the auto-matcher over the freshly inserted lines.
+  app.post('/api/juno/bank/import/apply', async (req, reply) => {
+    const body = z.object({ token: z.string().min(1) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'missing_token' });
+    const staged = bankPreviews.get(body.data.token);
+    if (!staged || Date.now() - staged.at > BANK_PREVIEW_TTL_MS) {
+      bankPreviews.delete(body.data.token);
+      return reply.code(410).send({ error: 'preview_expired', detail: 'พรีวิวหมดอายุ — กรุณาอัปโหลดไฟล์ใหม่' });
+    }
+    bankPreviews.delete(body.data.token);
+
+    const newIdx = staged.isNew.map((n, i) => (n ? i : -1)).filter((i) => i >= 0);
+
+    const imp = await prisma.bankImport.create({
+      data: {
+        source: staged.source,
+        fileName: staged.fileName,
+        importedBy: req.agent?.id,
+        rowsParsed: staged.parsed,
+        txnsNew: newIdx.length,
+        txnsDup: staged.rows.length - newIdx.length,
+        txnsExcluded: staged.excluded,
+      },
+    });
+
+    const insertedIds: string[] = [];
+    const CHUNK = 50;
+    for (let i = 0; i < newIdx.length; i += CHUNK) {
+      const slice = newIdx.slice(i, i + CHUNK);
+      const created = await prisma.$transaction(
+        slice.map((idx) => {
+          const r = staged.rows[idx];
+          return prisma.bankTxn.create({
+            data: {
+              source: staged.source,
+              txnAt: r.txnAt,
+              amount: r.amount,
+              direction: r.direction,
+              channel: r.channel,
+              description: r.description,
+              details: r.details,
+              payerName: r.payerName,
+              payerBank: r.payerBank,
+              dedupeKey: staged.dedupeKeys[idx],
+              importId: imp.id,
+            },
+            select: { id: true, direction: true },
+          });
+        }),
+      );
+      insertedIds.push(...created.filter((c) => c.direction === 'in').map((c) => c.id));
+    }
+
+    const autoMatched = await runAutoMatcher(insertedIds);
+
+    return {
+      ok: true,
+      importId: imp.id,
+      source: staged.source,
+      counts: { parsed: staged.parsed, new: newIdx.length, dup: staged.rows.length - newIdx.length, excluded: staged.excluded },
+      autoMatched,
+    };
+  });
+
+  // POST /api/juno/bank/automatch — re-run the auto-matcher over ALL currently-unmatched
+  // "in" bank txns (e.g. after FIN checks a backlog of payments post-import).
+  app.post('/api/juno/bank/automatch', async () => {
+    const autoMatched = await runAutoMatcher();
+    return { ok: true, autoMatched };
+  });
+
+  // GET /api/juno/bank/txns?status=&dir=&from=&to=&q= — the เงินเข้า/เงินออก list, with
+  // linked-payment summaries joined through PaymentBankMatch.
+  const bankTxnsQuerySchema = z.object({
+    status: z.enum(['all', 'unmatched', 'matched', 'confirmed']).optional(),
+    dir: z.enum(['in', 'out', 'all']).optional(),
+    from: z.string().max(40).optional(),
+    to: z.string().max(40).optional(),
+    q: z.string().max(120).optional(),
+    limit: z.coerce.number().int().min(1).max(500).optional(),
+  });
+  app.get('/api/juno/bank/txns', async (req, reply) => {
+    const parsed = bankTxnsQuerySchema.safeParse(req.query ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_query' });
+    const q = parsed.data;
+
+    const where: Record<string, unknown> = {};
+    where.direction = q.dir && q.dir !== 'all' ? q.dir : 'in';
+    if (q.status === 'unmatched') where.matchStatus = 'unmatched';
+    else if (q.status === 'matched') { where.matchStatus = 'matched'; where.expressConfirmedAt = null; }
+    else if (q.status === 'confirmed') where.expressConfirmedAt = { not: null };
+    const range = thaiDayRange(q.from, q.to);
+    if (range) where.txnAt = range;
+    const term = q.q?.trim();
+    if (term) {
+      where.OR = [
+        { details: { contains: term, mode: 'insensitive' } },
+        { payerName: { contains: term, mode: 'insensitive' } },
+        { refText: { contains: term, mode: 'insensitive' } },
+        { amount: { contains: term } },
+      ];
+    }
+
+    const txns = await prisma.bankTxn.findMany({ where, orderBy: { txnAt: 'desc' }, take: q.limit ?? 200 });
+    const links = await prisma.paymentBankMatch.findMany({
+      where: { bankTxnId: { in: txns.map((t) => t.id) } },
+      select: { bankTxnId: true, payment: { select: { id: true, reNumber: true, receiptName: true, customerName: true, amount: true } } },
+    });
+    const byTxn = new Map<string, typeof links>();
+    for (const l of links) byTxn.set(l.bankTxnId, [...(byTxn.get(l.bankTxnId) ?? []), l]);
+
+    return {
+      txns: txns.map((t) =>
+        toBankTxnRow(
+          t,
+          (byTxn.get(t.id) ?? []).map((l) => ({
+            paymentId: l.payment.id, reNumber: l.payment.reNumber, receiptName: l.payment.receiptName,
+            customerName: l.payment.customerName, amount: l.payment.amount,
+          })),
+        ),
+      ),
+    };
+  });
+
+  // GET /api/juno/bank/txns/:id/suggestions — ranked candidate payments for the จับคู่ panel.
+  // Exact-amount first (by day distance), then name-similarity, then same-day ± small delta.
+  app.get<{ Params: { id: string } }>('/api/juno/bank/txns/:id/suggestions', async (req, reply) => {
+    const txn = await prisma.bankTxn.findUnique({ where: { id: req.params.id } });
+    if (!txn) return reply.code(404).send({ error: 'not_found' });
+
+    const linked = await prisma.paymentBankMatch.findMany({ where: { bankTxnId: txn.id }, select: { paymentId: true } });
+    const excludeIds = new Set(linked.map((l) => l.paymentId));
+
+    const candidates = await prisma.payment.findMany({
+      where: { status: 'verified', id: { notIn: [...excludeIds] } },
+      select: { id: true, reNumber: true, receiptName: true, customerName: true, senderName: true, amount: true, transferAt: true, createdAt: true },
+      take: 500, // ranked below; a bound keeps this cheap even on a large backlog
+    });
+
+    const txnAmount = parseFloat(txn.amount);
+    const scored = candidates.map((p) => {
+      const pAt = paymentTimestamp(p.transferAt, p.createdAt);
+      const days = dayDistance(txn.txnAt, pAt);
+      const exact = amountsEqual(txn.amount, p.amount);
+      const nameScore = Math.max(
+        nameSimilarity(txn.payerName || txn.details, p.senderName || p.customerName),
+        nameSimilarity(txn.payerName || txn.details, p.receiptName),
+      );
+      const delta = Math.abs(txnAmount - parseFloat(p.amount || '0'));
+      // Rank tiers: exact-amount (closer day wins ties) > name-similarity > same-day-small-delta.
+      // Encoded as a single sortable number: tier * 1000 - tiebreak, higher = better.
+      let score = 0;
+      if (exact) score = 3000 - days;
+      else if (nameScore > 0.3) score = 2000 + nameScore * 100 - days;
+      else if (days < 1 && delta <= Math.max(1, txnAmount * 0.02)) score = 1000 - delta;
+      else score = -1;
+      return { p, days, exact, nameScore, delta, score };
+    }).filter((s) => s.score > -1);
+
+    scored.sort((a, b) => b.score - a.score);
+    const top = scored.slice(0, 10);
+
+    return {
+      suggestions: top.map((s) => ({
+        paymentId: s.p.id,
+        reNumber: s.p.reNumber,
+        receiptName: s.p.receiptName,
+        customerName: s.p.customerName,
+        senderName: s.p.senderName,
+        amount: s.p.amount,
+        dayDistance: Number(s.days.toFixed(2)),
+        exactAmount: s.exact,
+        nameScore: Number(s.nameScore.toFixed(2)),
+      })),
+    };
+  });
+
+  // POST /api/juno/bank/txns/:id/match { paymentIds: string[] } — link several payments to
+  // one bank line (many-to-many; adds to existing links). Each link sets payment.reconciled.
+  // Sum mismatch is allowed (fees) — the caller gets `sumDelta` back for the UI badge.
+  app.post<{ Params: { id: string } }>('/api/juno/bank/txns/:id/match', async (req, reply) => {
+    const body = z.object({ paymentIds: z.array(z.string().min(1)).min(1).max(50) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
+
+    const txn = await prisma.bankTxn.findUnique({ where: { id: req.params.id } });
+    if (!txn) return reply.code(404).send({ error: 'not_found' });
+
+    const payments = await prisma.payment.findMany({ where: { id: { in: body.data.paymentIds } }, select: { id: true, amount: true } });
+    if (payments.length !== body.data.paymentIds.length) return reply.code(400).send({ error: 'unknown_payment' });
+
+    // createMany + skipDuplicates so re-adding an already-linked payment (e.g. a double
+    // click) is idempotent rather than 500ing on the @@unique([paymentId, bankTxnId]).
+    await prisma.paymentBankMatch.createMany({
+      data: payments.map((p) => ({ paymentId: p.id, bankTxnId: txn.id, createdById: req.agent?.id ?? null })),
+      skipDuplicates: true,
+    });
+    await Promise.all(payments.map((p) => recomputePaymentReconciled(p.id)));
+    await recomputeTxnMatchStatus(txn.id);
+
+    const allLinks = await prisma.paymentBankMatch.findMany({
+      where: { bankTxnId: txn.id },
+      select: { payment: { select: { amount: true } } },
+    });
+    const linkedSum = allLinks.reduce((s, l) => s + txnAmountNum(l.payment.amount), 0);
+    const sumDelta = Number((linkedSum - txnAmountNum(txn.amount)).toFixed(2));
+
+    return { ok: true, sumDelta };
+  });
+
+  // POST /api/juno/bank/txns/:id/unmatch { paymentId } — remove one link; recompute both
+  // sides (payment.reconciled and txn.matchStatus — unmatched only when no links AND
+  // refText is empty, so a line with a manual reference doesn't flip back to unmatched).
+  app.post<{ Params: { id: string } }>('/api/juno/bank/txns/:id/unmatch', async (req, reply) => {
+    const body = z.object({ paymentId: z.string().min(1) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
+
+    const link = await prisma.paymentBankMatch.findUnique({
+      where: { paymentId_bankTxnId: { paymentId: body.data.paymentId, bankTxnId: req.params.id } },
+    });
+    if (!link) return reply.code(404).send({ error: 'not_found' });
+
+    await prisma.paymentBankMatch.delete({ where: { id: link.id } });
+    await recomputePaymentReconciled(body.data.paymentId);
+    await recomputeTxnMatchStatus(req.params.id);
+
+    return { ok: true };
+  });
+
+  // POST /api/juno/bank/txns/:id/ref { refText } — manual reference for non-Payment income
+  // (cheque no. / บิล 38/13 / Shopee / a typed RE list). Non-empty → matched; empty →
+  // recompute (falls back to unmatched unless links still exist).
+  app.post<{ Params: { id: string } }>('/api/juno/bank/txns/:id/ref', async (req, reply) => {
+    const body = z.object({ refText: z.string().max(300) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
+
+    const exists = await prisma.bankTxn.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!exists) return reply.code(404).send({ error: 'not_found' });
+
+    await prisma.bankTxn.update({ where: { id: req.params.id }, data: { refText: body.data.refText.trim() } });
+    await recomputeTxnMatchStatus(req.params.id);
+    const updated = await prisma.bankTxn.findUnique({ where: { id: req.params.id } });
+    return { ok: true, txn: toBankTxnRow(updated!) };
+  });
+
+  // POST /api/juno/bank/txns/:id/confirm { } — per-line ยืนยัน Express: stamp
+  // expressConfirmedAt/By on this matched line AND advance every linked Payment with
+  // status 'verified' → 'recorded' (payments already recorded are left alone).
+  app.post<{ Params: { id: string } }>('/api/juno/bank/txns/:id/confirm', async (req, reply) => {
+    const txn = await prisma.bankTxn.findUnique({ where: { id: req.params.id } });
+    if (!txn) return reply.code(404).send({ error: 'not_found' });
+    if (txn.matchStatus !== 'matched') return reply.code(409).send({ error: 'not_matched' });
+
+    const links = await prisma.paymentBankMatch.findMany({ where: { bankTxnId: txn.id }, select: { paymentId: true } });
+    const now = new Date();
+    await prisma.$transaction([
+      prisma.bankTxn.update({ where: { id: txn.id }, data: { expressConfirmedAt: now, expressConfirmedById: req.agent?.id ?? null } }),
+      prisma.payment.updateMany({
+        where: { id: { in: links.map((l) => l.paymentId) }, status: 'verified' },
+        data: { status: 'recorded', verifiedById: req.agent?.id ?? null, verifiedAt: now },
+      }),
+    ]);
+    return { ok: true };
+  });
+
+  // POST /api/juno/bank/confirm-matched { to? } — the WEEKEND bulk action: stamps
+  // expressConfirmedAt/By on every matched-but-unconfirmed "in" line (≤ `to`, Thai day
+  // inclusive) AND advances every linked Payment whose status is 'verified' → 'recorded'.
+  // Payments that are received/void/already-recorded are untouched, exactly as spec'd.
+  const confirmMatchedBodySchema = z.object({ to: z.string().max(40).optional() });
+  app.post('/api/juno/bank/confirm-matched', async (req, reply) => {
+    const body = confirmMatchedBodySchema.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
+
+    const range = thaiDayRange(undefined, body.data.to);
+    const where: Record<string, unknown> = {
+      direction: 'in', matchStatus: 'matched', expressConfirmedAt: null,
+    };
+    if (range?.lte) where.txnAt = { lte: range.lte };
+
+    const txns = await prisma.bankTxn.findMany({ where, select: { id: true } });
+    if (!txns.length) return { ok: true, txnsConfirmed: 0, paymentsAdvanced: 0 };
+
+    const links = await prisma.paymentBankMatch.findMany({
+      where: { bankTxnId: { in: txns.map((t) => t.id) } },
+      select: { paymentId: true },
+    });
+    const paymentIds = [...new Set(links.map((l) => l.paymentId))];
+    const now = new Date();
+
+    const [, advanced] = await prisma.$transaction([
+      prisma.bankTxn.updateMany({
+        where: { id: { in: txns.map((t) => t.id) } },
+        data: { expressConfirmedAt: now, expressConfirmedById: req.agent?.id ?? null },
+      }),
+      prisma.payment.updateMany({
+        where: { id: { in: paymentIds }, status: 'verified' }, // only 'verified' advances; received/void/recorded untouched
+        data: { status: 'recorded', verifiedById: req.agent?.id ?? null, verifiedAt: now },
+      }),
+    ]);
+
+    return { ok: true, txnsConfirmed: txns.length, paymentsAdvanced: advanced.count };
+  });
+
+  // GET /api/juno/bank/summary — cards for the กระทบยอด tab.
+  app.get('/api/juno/bank/summary', async () => {
+    const [unmatchedIn, matchedUnconfirmed, unreconciledVerified, lastKbiz, lastKshop] = await Promise.all([
+      prisma.bankTxn.findMany({ where: { direction: 'in', matchStatus: 'unmatched' }, select: { amount: true } }),
+      prisma.bankTxn.findMany({ where: { direction: 'in', matchStatus: 'matched', expressConfirmedAt: null }, select: { amount: true } }),
+      prisma.payment.findMany({ where: { status: 'verified', reconciled: false }, select: { amount: true, verifiedAt: true, createdAt: true } }),
+      prisma.bankImport.findFirst({ where: { source: 'kbiz' }, orderBy: { importedAt: 'desc' } }),
+      prisma.bankImport.findFirst({ where: { source: 'kshop' }, orderBy: { importedAt: 'desc' } }),
+    ]);
+    const sum = (rows: { amount: string }[]) => rows.reduce((s, r) => s + txnAmountNum(r.amount), 0);
+    const now = Date.now();
+    const oldestDays = unreconciledVerified.length
+      ? Math.max(...unreconciledVerified.map((p) => (now - (p.verifiedAt ?? p.createdAt).getTime()) / (24 * 3600 * 1000)))
+      : 0;
+
+    return {
+      unmatchedIn: { count: unmatchedIn.length, sum: sum(unmatchedIn) },
+      matchedUnconfirmed: { count: matchedUnconfirmed.length, sum: sum(matchedUnconfirmed) },
+      verifiedUnreconciled: { count: unreconciledVerified.length, sum: sum(unreconciledVerified), oldestDays: Math.round(oldestDays) },
+      lastImports: { kbiz: lastKbiz, kshop: lastKshop },
+    };
+  });
+
+  // GET /api/juno/bank/watchlist?limit= — ใบเสร็จที่ยังไม่พบเงินเข้า: Payments verified +
+  // !reconciled, oldest first (the fraud/error watchlist the sheet never had).
+  app.get('/api/juno/bank/watchlist', async (req) => {
+    const limit = Math.min(Math.max(Number((req.query as { limit?: string }).limit) || 100, 1), 500);
+    const rows = await prisma.payment.findMany({
+      where: { status: 'verified', reconciled: false },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+    });
+    return { payments: rows.map(toRow) };
   });
 }

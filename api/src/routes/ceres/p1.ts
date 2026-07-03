@@ -5,6 +5,7 @@ import { env } from '../../env.js';
 import { requireCeresRole, ceresRole as ceresRoleOf } from '../../ceres/auth.js';
 import { saveCeresReceipt, readCeresReceiptMeta } from '../../ceres/receiptStore.js';
 import { readReceiptImage } from '../../llm/readReceipt.js';
+import { reviewExpensePostHoc } from '../../ceres/aiReview.js';
 import { ceresReceiptUrl, isValidAmount, thaiDayKey, thaiDayRange, toExpenseRow, computeBoard } from './common.js';
 
 const ENTITIES = ['PROM', 'DENL'] as const;
@@ -288,6 +289,7 @@ export function p1Routes(app: FastifyInstance) {
         where: { id: existing.id },
         data: { status: 'approved', approvedById: req.agent!.id, approvedAt: new Date() },
       });
+      void reviewExpensePostHoc(updated.id).catch((err) => req.log.error({ err }, 'ceres post-hoc review failed'));
       return { expense: toExpenseRow(updated, reqBase(req)) };
     },
   );

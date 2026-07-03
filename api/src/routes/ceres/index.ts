@@ -4,6 +4,8 @@ import { requireCeresAuth } from '../../ceres/auth.js';
 import { readCeresReceiptMeta, readCeresReceiptFile } from '../../ceres/receiptStore.js';
 import { ceresReceiptToken } from '../../ceres/receiptLink.js';
 import { p1Routes } from './p1.js';
+import { requestsRoutes } from './requests.js';
+import { ceoRoutes } from './ceo.js';
 
 // Ceres (expenses & petty cash) API. Two PUBLIC routes (receipt image serving —
 // tokenized, and the messenger login-name picker) plus a scoped sub-plugin gated
@@ -50,5 +52,7 @@ export async function ceresRoutes(app: FastifyInstance) {
   await app.register(async (scoped) => {
     scoped.addHook('preHandler', requireCeresAuth);
     p1Routes(scoped);
+    requestsRoutes(scoped);
+    ceoRoutes(scoped);
   });
 }

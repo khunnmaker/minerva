@@ -189,6 +189,7 @@ export interface CreatePaymentBody {
   chequeNo?: string;
   chequeBank?: string;
   chequeDueDate?: string;
+  taxInvoice?: string;
 }
 export const createPayment = (body: CreatePaymentBody) =>
   authed<{ ok: boolean; payment: Payment }>('/api/juno/payments', {

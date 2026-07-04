@@ -323,10 +323,11 @@ export async function junoRoutes(app: FastifyInstance) {
   });
 
   // POST /api/juno/payments { source, customerCode, customerName, amount, note?, senderName?,
-  // bank?, transferAt?, ref?, slipUrl?, chequeNo?, chequeBank?, chequeDueDate? } — FIN/CEO
-  // hand-add a payment that didn't arrive via Minerva's /to-finance LINE hook (see
+  // bank?, transferAt?, ref?, slipUrl?, chequeNo?, chequeBank?, chequeDueDate?, taxInvoice? } —
+  // FIN/CEO hand-add a payment that didn't arrive via Minerva's /to-finance LINE hook (see
   // JUNO_MANUAL_ENTRY_BRIEF.md decision 2). 'line' is NOT accepted here — that source is
   // Minerva-only. ocrAmount is left '' so the OCR-mismatch flag never fires on a manual row.
+  // taxInvoice mirrors /to-finance: non-empty sets taxInvoiceStatus 'requested', else 'none'.
   const createPaymentBodySchema = z.object({
     source: z.enum(['manual_transfer', 'cash', 'cheque']),
     customerCode: z.string().max(40).default(''),
@@ -343,6 +344,8 @@ export async function junoRoutes(app: FastifyInstance) {
     chequeNo: z.string().max(60).optional(),
     chequeBank: z.string().max(120).optional(),
     chequeDueDate: z.string().max(60).optional(),
+    // shared (all methods) — ใบกำกับภาษี captured off the slip/customer, mirrors /to-finance
+    taxInvoice: z.string().max(600).optional(),
   });
   app.post('/api/juno/payments', async (req, reply) => {
     const body = createPaymentBodySchema.safeParse(req.body);
@@ -365,6 +368,8 @@ export async function junoRoutes(app: FastifyInstance) {
         chequeNo: body.data.chequeNo?.trim() ?? '',
         chequeBank: body.data.chequeBank?.trim() ?? '',
         chequeDueDate: body.data.chequeDueDate?.trim() ?? '',
+        taxInvoice: body.data.taxInvoice?.trim() ?? '',
+        taxInvoiceStatus: body.data.taxInvoice?.trim() ? 'requested' : 'none',
         status: 'received',
         salesAgentId: req.agent?.id,
         salesName: req.agent?.name ?? '', // the entering user, so reports attribute it correctly

@@ -335,6 +335,7 @@ function AddPaymentModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
   const [customerName, setCustomerName] = useState('');
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
+  const [taxInvoice, setTaxInvoice] = useState(''); // shared (all methods) — every sale gets one
   // โอนเงิน-only
   const [bank, setBank] = useState('');
   const [transferAt, setTransferAt] = useState('');
@@ -406,6 +407,7 @@ function AddPaymentModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
         customerName: customerName.trim(),
         amount: amount.trim(),
         note: note.trim() || undefined,
+        taxInvoice: taxInvoice.trim() || undefined,
         ...(method === 'manual_transfer'
           ? {
               bank: bank.trim() || undefined,
@@ -455,94 +457,118 @@ function AddPaymentModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
           ))}
         </div>
 
-        {/* common fields */}
-        <div className="grid grid-cols-2 gap-2">
-          <label className="block">
-            <span className={label}>รหัสลูกค้า</span>
-            <input value={customerCode} onChange={(e) => setCustomerCode(e.target.value)} placeholder="เช่น ร103" className={input} />
-          </label>
-          <label className="block">
-            <span className={label}>ชื่อลูกค้า</span>
-            <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="ชื่อลูกค้า" className={input} />
-          </label>
-        </div>
-        <label className="block">
-          <span className={label}>จำนวนเงิน</span>
-          <input
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            placeholder="0.00"
-            inputMode="decimal"
-            className={`${input} ${amount && !(Number.isFinite(amountNum) && amountNum > 0) ? 'border-rose-300 focus:ring-rose-300' : ''}`}
-          />
-        </label>
-
-        {method === 'manual_transfer' && (
+        {method === 'manual_transfer' ? (
           <>
+            {/* โอนเงิน: led by ONE attach-slip button (Minerva's แจ้งการเงิน pattern) — pick a
+                file, it uploads + best-effort OCRs into whichever fields below are still empty.
+                Fields stay editable throughout (unlike Minerva, which locks OCR'd fields): a
+                manual Juno entry may have no slip at all, so locking would block hand entry. */}
+            <label className="flex items-center justify-center gap-2 w-full px-3 py-2.5 rounded-lg border-2 border-dashed border-emerald-300 bg-emerald-50/50 text-sm font-medium text-emerald-700 hover:bg-emerald-50 cursor-pointer disabled:opacity-50">
+              {readingSlip ? (
+                <><Loader2 size={16} className="animate-spin" /> กำลังอ่านสลิป…</>
+              ) : uploadingSlip ? (
+                <><Loader2 size={16} className="animate-spin" /> กำลังอัปโหลด…</>
+              ) : slipUrl ? (
+                <><Check size={16} /> แนบแล้ว: {slipName || 'สลิป'} — แตะเพื่อแนบใหม่</>
+              ) : (
+                <><Paperclip size={16} /> แนบสลิป</>
+              )}
+              <input type="file" accept="image/*" className="hidden" disabled={uploadingSlip || readingSlip}
+                onChange={(e) => void pickSlip(e.target.files?.[0])} />
+            </label>
+
             <div className="grid grid-cols-2 gap-2">
               <label className="block">
-                <span className={label}>ธนาคารที่รับ</span>
-                <input value={bank} onChange={(e) => setBank(e.target.value)} className={input} />
+                <span className={label}>รหัสลูกค้า</span>
+                <input value={customerCode} onChange={(e) => setCustomerCode(e.target.value)} placeholder="เช่น ร103" className={input} />
+              </label>
+              <label className="block">
+                <span className={label}>ชื่อ</span>
+                <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="ชื่อลูกค้า" className={input} />
+              </label>
+            </div>
+            <label className="block">
+              <span className={label}>ชื่อผู้โอน</span>
+              <input value={senderName} onChange={(e) => setSenderName(e.target.value)} placeholder="ชื่อผู้โอน" className={input} />
+            </label>
+            <label className="block">
+              <span className={label}>จำนวนเงิน</span>
+              <input
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                placeholder="เช่น 1500"
+                inputMode="decimal"
+                className={`${input} ${amount && !(Number.isFinite(amountNum) && amountNum > 0) ? 'border-rose-300 focus:ring-rose-300' : ''}`}
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block">
+                <span className={label}>บัญชีที่รับเงิน</span>
+                <input value={bank} onChange={(e) => setBank(e.target.value)} placeholder="กสิกร / ไทยพาณิชย์" className={input} />
               </label>
               <label className="block">
                 <span className={label}>วันเวลาโอน</span>
-                <input value={transferAt} onChange={(e) => setTransferAt(e.target.value)} placeholder="เช่น 04/07/26 14:30" className={input} />
-              </label>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <label className="block">
-                <span className={label}>อ้างอิง</span>
-                <input value={ref} onChange={(e) => setRef(e.target.value)} className={input} />
-              </label>
-              <label className="block">
-                <span className={label}>ผู้โอน</span>
-                <input value={senderName} onChange={(e) => setSenderName(e.target.value)} className={input} />
+                <input value={transferAt} onChange={(e) => setTransferAt(e.target.value)} placeholder="27/06/2026 14:30" className={input} />
               </label>
             </div>
             <label className="block">
-              <span className={label}>แนบสลิป (ถ้ามี)</span>
-              <div className="mt-0.5 flex items-center gap-2">
-                <label className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs text-slate-600 hover:bg-slate-50 cursor-pointer">
-                  {uploadingSlip ? <Loader2 size={13} className="animate-spin" /> : <Paperclip size={13} />}
-                  เลือกไฟล์
-                  <input type="file" accept="image/*" className="hidden" disabled={uploadingSlip}
-                    onChange={(e) => void pickSlip(e.target.files?.[0])} />
-                </label>
-                {slipUrl && !readingSlip && (
-                  <span className="flex items-center gap-1 text-xs text-emerald-700">
-                    <Check size={13} /> {slipName || 'แนบแล้ว'}
-                  </span>
-                )}
-                {readingSlip && (
-                  <span className="flex items-center gap-1 text-xs text-slate-500">
-                    <Loader2 size={13} className="animate-spin" /> กำลังอ่านสลิป…
-                  </span>
-                )}
-              </div>
+              <span className={label}>เลขอ้างอิง</span>
+              <input value={ref} onChange={(e) => setRef(e.target.value)} className={input} />
             </label>
+          </>
+        ) : (
+          <>
+            {/* common fields (เงินสด / เช็คธนาคาร — unchanged from before) */}
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block">
+                <span className={label}>รหัสลูกค้า</span>
+                <input value={customerCode} onChange={(e) => setCustomerCode(e.target.value)} placeholder="เช่น ร103" className={input} />
+              </label>
+              <label className="block">
+                <span className={label}>ชื่อลูกค้า</span>
+                <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="ชื่อลูกค้า" className={input} />
+              </label>
+            </div>
+            <label className="block">
+              <span className={label}>จำนวนเงิน</span>
+              <input
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                placeholder="0.00"
+                inputMode="decimal"
+                className={`${input} ${amount && !(Number.isFinite(amountNum) && amountNum > 0) ? 'border-rose-300 focus:ring-rose-300' : ''}`}
+              />
+            </label>
+
+            {method === 'cheque' && (
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className={label}>เลขที่เช็ค</span>
+                  <input value={chequeNo} onChange={(e) => setChequeNo(e.target.value)} className={input} />
+                </label>
+                <label className="block">
+                  <span className={label}>ธนาคาร</span>
+                  <input value={chequeBank} onChange={(e) => setChequeBank(e.target.value)} className={input} />
+                </label>
+                <label className="block col-span-2">
+                  <span className={label}>วันที่บนเช็ค</span>
+                  <input value={chequeDueDate} onChange={(e) => setChequeDueDate(e.target.value)} placeholder="เช่น 04/07/26" className={input} />
+                </label>
+              </div>
+            )}
           </>
         )}
 
-        {method === 'cheque' && (
-          <div className="grid grid-cols-2 gap-2">
-            <label className="block">
-              <span className={label}>เลขที่เช็ค</span>
-              <input value={chequeNo} onChange={(e) => setChequeNo(e.target.value)} className={input} />
-            </label>
-            <label className="block">
-              <span className={label}>ธนาคาร</span>
-              <input value={chequeBank} onChange={(e) => setChequeBank(e.target.value)} className={input} />
-            </label>
-            <label className="block col-span-2">
-              <span className={label}>วันที่บนเช็ค</span>
-              <input value={chequeDueDate} onChange={(e) => setChequeDueDate(e.target.value)} placeholder="เช่น 04/07/26" className={input} />
-            </label>
-          </div>
-        )}
-
+        {/* shared (all methods) — every sale gets a tax invoice */}
+        <label className="block">
+          <span className={label}>ใบกำกับภาษี</span>
+          <textarea value={taxInvoice} onChange={(e) => setTaxInvoice(e.target.value)} rows={3}
+            placeholder="ชื่อ / ที่อยู่ / เลขประจำตัวผู้เสียภาษี 13 หลัก (ถ้าลูกค้าขอ)"
+            className={`${input} resize-none`} />
+        </label>
         <label className="block">
           <span className={label}>หมายเหตุ</span>
-          <input value={note} onChange={(e) => setNote(e.target.value)} className={input} />
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="หมายเหตุเพิ่มเติม (ถ้ามี)" className={input} />
         </label>
 
         {err && <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-2">{err}</div>}

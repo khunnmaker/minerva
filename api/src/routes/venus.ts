@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from '../db/prisma.js';
-import { requireAuth, requireRole } from '../auth/middleware.js';
+import { requireAuth, requireRole, requireApp } from '../auth/middleware.js';
 import { decodeExpressBytes, parseArmast, type ParsedVenusCustomer } from '../venus/parseArmast.js';
 
 // Venus — 360° customer CRM. Stage A+B: backend foundation only (Express customer-master
@@ -10,10 +10,10 @@ import { decodeExpressBytes, parseArmast, type ParsedVenusCustomer } from '../ve
 // analytics yet — just the customer dimension the rest of Venus builds on.
 //
 // Import is supervisor-only (mirrors Vulcan/Juno: imports/config = supervisor). Reading
-// the customer list is open to supervisor + agents (Venus is explicitly the first
-// non-Minerva deity agents can enter — md/messenger stay excluded per VENUS_BRIEF.md §3).
+// the customer list is per-grant: requireApp('venus') — supervisor always passes, md is
+// excluded (md → ceres only), employees need 'venus' in their Agent.apps (owner-granted via
+// Jupiter's admin UI). Suite-consistent with Vulcan/Juno/Ceres per the owner's access call.
 
-const READ_ROLES = new Set(['supervisor', 'employee']); // md/messenger excluded (Ceres-only)
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024; // real ARMAST export is ~6.6MB
 
 // Lowercase + strip everything but alnum/Thai, so "Cก002" / "cก002" / "cก-002" all match
@@ -175,14 +175,10 @@ export async function venusRoutes(app: FastifyInstance) {
     };
   });
 
-  // Everything below requires login; GET routes are open to supervisor + agents (md and
-  // messenger are excluded — see READ_ROLES above).
+  // Everything below requires login + the 'venus' app grant (supervisor always passes; md
+  // excluded; employees need the grant). requireApp implies requireAuth ran, so run both.
   app.addHook('onRequest', requireAuth);
-  app.addHook('preHandler', async (req, reply) => {
-    if (!req.agent || !READ_ROLES.has(req.agent.role)) {
-      return reply.code(403).send({ error: 'forbidden' });
-    }
-  });
+  app.addHook('preHandler', requireApp('venus'));
 
   // GET /api/venus/customers?q=&limit=&offset= — search by name/code (dash-insensitive
   // via searchKey), paginated.

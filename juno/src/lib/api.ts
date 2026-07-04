@@ -15,6 +15,11 @@ export interface Agent {
 export type PaymentStatus = 'received' | 'verified' | 'recorded' | 'void';
 export type TaxStatus = 'none' | 'requested' | 'issued';
 export type CustomerType = 'โอนก่อนส่ง' | 'เครดิต' | 'เก็บปลายทาง' | '';
+// how a Payment entered Juno: 'line' = Minerva LINE-slip hook (default); the rest are
+// hand-added in Juno (see JUNO_MANUAL_ENTRY_BRIEF.md).
+export type PaymentSource = 'line' | 'manual_transfer' | 'cash' | 'cheque';
+// cash/cheque banking state: '' (รอ) -> cash 'deposited' (ฝากธนาคารแล้ว) / cheque 'cleared' (เคลียร์แล้ว)
+export type SettleState = '' | 'deposited' | 'cleared';
 
 export interface Payment {
   id: string;
@@ -44,6 +49,13 @@ export interface Payment {
   reNumber: string;
   receiptName: string;
   customerType: CustomerType;
+  // how this row was created + cash/cheque banking state (see settlePayment)
+  source: PaymentSource;
+  settleState: SettleState;
+  settledAt: string | null;
+  chequeNo: string;
+  chequeBank: string;
+  chequeDueDate: string;
 }
 
 export interface Summary {
@@ -53,6 +65,7 @@ export interface Summary {
   recorded: number;
   flagged: number;
   taxRequested: number;
+  cashChequePending: number;
 }
 
 export interface ReportGroup {
@@ -68,6 +81,7 @@ export interface Report {
   groups: ReportGroup[];
 }
 
+export type SourceFilter = 'all' | 'transfer' | 'cashcheque' | PaymentSource;
 export interface PaymentFilter {
   q?: string;
   status?: 'all' | PaymentStatus;
@@ -76,6 +90,8 @@ export interface PaymentFilter {
   from?: string;
   to?: string;
   excludeVoid?: boolean; // Reports CSV: match the on-screen report, which excludes voids
+  // 'transfer' = line + manual_transfer (inbox/flags); 'cashcheque' = cash + cheque (new tab)
+  source?: SourceFilter;
 }
 
 const TOKEN_KEY = 'juno_token';
@@ -147,6 +163,7 @@ function filterQuery(f: PaymentFilter): string {
   if (f.from) p.set('from', f.from);
   if (f.to) p.set('to', f.to);
   if (f.excludeVoid) p.set('noVoid', '1');
+  if (f.source && f.source !== 'all') p.set('source', f.source);
   const s = p.toString();
   return s ? `?${s}` : '';
 }
@@ -156,11 +173,51 @@ export const getSummary = () => authed<Summary>('/api/juno/summary');
 export const getPayments = (f: PaymentFilter) =>
   authed<{ payments: Payment[] }>(`/api/juno/payments${filterQuery(f)}`);
 
+// Hand-add a payment that didn't arrive via the LINE hook (โอนเงิน / เงินสด / เช็คธนาคาร —
+// see AddPaymentModal). 'line' is never sent from here — that source is Minerva-only.
+export interface CreatePaymentBody {
+  source: Exclude<PaymentSource, 'line'>;
+  customerCode?: string;
+  customerName?: string;
+  amount: string;
+  note?: string;
+  senderName?: string;
+  bank?: string;
+  transferAt?: string;
+  ref?: string;
+  slipUrl?: string;
+  chequeNo?: string;
+  chequeBank?: string;
+  chequeDueDate?: string;
+}
+export const createPayment = (body: CreatePaymentBody) =>
+  authed<{ ok: boolean; payment: Payment }>('/api/juno/payments', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
 export const setStatus = (id: string, status: PaymentStatus) =>
   authed<{ ok: boolean; payment: Payment }>(`/api/juno/payments/${id}/status`, {
     method: 'POST',
     body: JSON.stringify({ status }),
   });
+
+// cash/cheque settle control (the เงินสด/เช็ค tab's drawer section) — '' reverts (ยกเลิก).
+export const settlePayment = (id: string, state: SettleState) =>
+  authed<{ ok: boolean; payment: Payment }>(`/api/juno/payments/${id}/settle`, {
+    method: 'POST',
+    body: JSON.stringify({ state }),
+  });
+
+// Reuses Minerva's staff-upload endpoint (see api/src/routes/messages.ts POST /api/uploads)
+// for the optional transfer slip photo. Returns the public URL to store on Payment.slipUrl.
+export async function uploadSlip(dataB64: string, fileName?: string): Promise<{ uploadId: string; url: string }> {
+  const { uploadId } = await authed<{ uploadId: string }>('/api/uploads', {
+    method: 'POST',
+    body: JSON.stringify({ dataB64, fileName }),
+  });
+  return { uploadId, url: `${API_URL}/content/upload/${uploadId}` };
+}
 
 // The check dialog: FIN types the RE number issued in Express (plus the receipt name /
 // customer type) — the only route that can advance a payment to 'verified'.

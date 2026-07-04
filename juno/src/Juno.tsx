@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Landmark, LogOut, Search, Download, Flag, FileText, Inbox, BarChart3, Scale,
   Loader2, AlertTriangle, CheckCircle2, X, RefreshCw, ExternalLink, Ban, Crown, Printer,
-  Undo2, ClipboardCheck, CheckCheck,
+  Undo2, ClipboardCheck, CheckCheck, Banknote, Plus, Paperclip, Check,
 } from 'lucide-react';
 
 // Portal-back link (Jupiter). URL from build-time env; the link is hidden when unset, so it
@@ -10,9 +10,9 @@ import {
 const PORTAL_URL: string | undefined = import.meta.env.VITE_PORTAL_URL;
 import {
   getSummary, getPayments, setStatus, setFlag, verifyPayment, getReport, downloadCsv, baht,
-  clearSession, getBankSummary,
+  clearSession, getBankSummary, createPayment, settlePayment, uploadSlip, fileToBase64,
   type Agent, type Payment, type PaymentStatus, type Summary,
-  type Report, type PaymentFilter, type CustomerType,
+  type Report, type PaymentFilter, type CustomerType, type PaymentSource, type SettleState,
 } from './lib/api';
 import PrintCovers from './PrintCovers';
 import Recon from './Recon';
@@ -20,7 +20,7 @@ import Recon from './Recon';
 // No ใบกำกับภาษี tab: Prominent issues a tax invoice on EVERY sale (in Express, as part of
 // recording), so a "requested" queue would contain everything and filter nothing. The invoice
 // details captured off the slip flow (name/address/tax-ID) still show in the drawer.
-type View = 'inbox' | 'flags' | 'reports' | 'recon';
+type View = 'inbox' | 'flags' | 'reports' | 'recon' | 'cashcheque';
 
 // Thai-locale date/time display for the inbox + drawer (house pattern, vulcan/src/Stock.tsx).
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: '2-digit' });
@@ -53,8 +53,9 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
 
   const tabs: { key: View; label: string; icon: React.ReactNode; count?: number }[] = [
     { key: 'inbox', label: 'รายการรับเงิน', icon: <Inbox size={16} />, count: summary?.total },
-    { key: 'flags', label: 'ตรวจสอบยอด', icon: <Flag size={16} />, count: summary?.flagged },
+    { key: 'flags', label: 'ปักธง', icon: <Flag size={16} />, count: summary?.flagged },
     { key: 'recon', label: 'กระทบยอด', icon: <Scale size={16} />, count: bankUnmatched },
+    { key: 'cashcheque', label: 'เงินสด/เช็ค', icon: <Banknote size={16} />, count: summary?.cashChequePending },
     { key: 'reports', label: 'รายงาน', icon: <BarChart3 size={16} /> },
   ];
 
@@ -90,7 +91,7 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
             >
               {t.icon} {t.label}
               {typeof t.count === 'number' && t.count > 0 && (
-                <span className={`ml-1 px-1.5 rounded-full text-xs ${t.key === 'flags' || t.key === 'recon' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
+                <span className={`ml-1 px-1.5 rounded-full text-xs ${t.key === 'flags' || t.key === 'recon' || t.key === 'cashcheque' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
                   {t.count}
                 </span>
               )}
@@ -124,14 +125,18 @@ function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports' | 're
   const [selected, setSelected] = useState<Payment | null>(null);
   // non-null → render the print overlay (see PrintCovers) instead of the inbox
   const [printQueue, setPrintQueue] = useState<Payment[] | null>(null);
+  // + เพิ่มรายการ modal (inbox only — hand-add a โอนเงิน/เงินสด/เช็คธนาคาร payment)
+  const [addOpen, setAddOpen] = useState(false);
 
   const filter: PaymentFilter = {
     q: q.trim() || undefined,
     from: from || undefined,
     to: to || undefined,
-    // the flags tab is a pre-filtered queue; the inbox honours the status dropdown
+    // the flags tab is a pre-filtered queue; the inbox honours the status dropdown;
+    // the เงินสด/เช็ค tab shows every hand-added cash/cheque row regardless of status
     ...(view === 'flags' ? { flagged: true } : {}),
     ...(view === 'inbox' ? { status } : {}),
+    ...(view === 'cashcheque' ? { source: 'cashcheque' } : {}),
   };
 
   const load = useCallback(() => {
@@ -224,6 +229,14 @@ function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports' | 're
           >
             <Download size={15} /> CSV
           </button>
+          {view === 'inbox' && (
+            <button
+              onClick={() => setAddOpen(true)}
+              className="flex items-center gap-1 px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700"
+            >
+              <Plus size={15} /> เพิ่มรายการ
+            </button>
+          )}
       </div>
 
       <div className="flex gap-4">
@@ -292,7 +305,223 @@ function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports' | 're
           />
         )}
       </div>
+
+      {addOpen && (
+        <AddPaymentModal
+          onClose={() => setAddOpen(false)}
+          onSaved={() => {
+            setAddOpen(false);
+            load();
+            onChanged();
+          }}
+        />
+      )}
     </>
+  );
+}
+
+// ── Add-payment modal (โอนเงิน / เงินสด / เช็คธนาคาร — decision 2) ───────────────
+// FIN/CEO hand-add a Payment that didn't arrive via Minerva's LINE hook. Same modal style as
+// CheckDialog (fixed overlay, white rounded card, click-outside to close). After save the row
+// goes through the SAME RE flow as any other payment (ตรวจแล้ว / print / ยืนยันใน Express).
+const METHODS: { key: Exclude<PaymentSource, 'line'>; label: string }[] = [
+  { key: 'manual_transfer', label: 'โอนเงิน' },
+  { key: 'cash', label: 'เงินสด' },
+  { key: 'cheque', label: 'เช็คธนาคาร' },
+];
+function AddPaymentModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [method, setMethod] = useState<Exclude<PaymentSource, 'line'>>('manual_transfer');
+  const [customerCode, setCustomerCode] = useState('');
+  const [customerName, setCustomerName] = useState('');
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  // โอนเงิน-only
+  const [bank, setBank] = useState('');
+  const [transferAt, setTransferAt] = useState('');
+  const [ref, setRef] = useState('');
+  const [slipUrl, setSlipUrl] = useState('');
+  const [slipName, setSlipName] = useState('');
+  const [uploadingSlip, setUploadingSlip] = useState(false);
+  // เช็คธนาคาร-only
+  const [chequeNo, setChequeNo] = useState('');
+  const [chequeBank, setChequeBank] = useState('');
+  const [chequeDueDate, setChequeDueDate] = useState('');
+
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  const amountNum = parseFloat(amount.replace(/[^\d.-]/g, ''));
+  const valid = Number.isFinite(amountNum) && amountNum > 0 && customerName.trim() !== '';
+
+  async function pickSlip(file: File | undefined) {
+    if (!file) return;
+    setUploadingSlip(true);
+    setErr('');
+    try {
+      const b64 = await fileToBase64(file);
+      const { url } = await uploadSlip(b64, file.name);
+      setSlipUrl(url);
+      setSlipName(file.name);
+    } catch {
+      setErr('แนบสลิปไม่สำเร็จ — ลองใหม่อีกครั้ง');
+    } finally {
+      setUploadingSlip(false);
+    }
+  }
+
+  async function save() {
+    if (!valid || saving) return;
+    setSaving(true);
+    setErr('');
+    try {
+      await createPayment({
+        source: method,
+        customerCode: customerCode.trim(),
+        customerName: customerName.trim(),
+        amount: amount.trim(),
+        note: note.trim() || undefined,
+        ...(method === 'manual_transfer'
+          ? {
+              bank: bank.trim() || undefined,
+              transferAt: transferAt.trim() || undefined,
+              ref: ref.trim() || undefined,
+              slipUrl: slipUrl || undefined,
+            }
+          : {}),
+        ...(method === 'cheque'
+          ? {
+              chequeNo: chequeNo.trim() || undefined,
+              chequeBank: chequeBank.trim() || undefined,
+              chequeDueDate: chequeDueDate.trim() || undefined,
+            }
+          : {}),
+      });
+      onSaved();
+    } catch (e) {
+      setErr((e as Error).message === 'unauthorized' ? 'เซสชันหมดอายุ — กรุณาเข้าสู่ระบบใหม่' : 'บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const input = 'w-full mt-0.5 px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400';
+  const label = 'text-xs text-slate-500';
+
+  return (
+    <div className="fixed inset-0 z-40 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-4 w-full max-w-md space-y-3 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="font-semibold text-slate-800 flex items-center gap-1.5">
+          <Plus size={16} className="text-emerald-700" /> เพิ่มรายการรับเงิน
+        </div>
+
+        {/* 3-way method picker */}
+        <div className="flex rounded-lg border border-slate-300 overflow-hidden">
+          {METHODS.map((m) => (
+            <button
+              key={m.key}
+              type="button"
+              onClick={() => setMethod(m.key)}
+              className={`flex-1 px-2 py-1.5 text-xs font-medium ${method === m.key ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        {/* common fields */}
+        <div className="grid grid-cols-2 gap-2">
+          <label className="block">
+            <span className={label}>รหัสลูกค้า</span>
+            <input value={customerCode} onChange={(e) => setCustomerCode(e.target.value)} placeholder="เช่น ร103" className={input} />
+          </label>
+          <label className="block">
+            <span className={label}>ชื่อลูกค้า</span>
+            <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="ชื่อลูกค้า" className={input} />
+          </label>
+        </div>
+        <label className="block">
+          <span className={label}>จำนวนเงิน</span>
+          <input
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            placeholder="0.00"
+            inputMode="decimal"
+            className={`${input} ${amount && !(Number.isFinite(amountNum) && amountNum > 0) ? 'border-rose-300 focus:ring-rose-300' : ''}`}
+          />
+        </label>
+
+        {method === 'manual_transfer' && (
+          <>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block">
+                <span className={label}>ธนาคารที่รับ</span>
+                <input value={bank} onChange={(e) => setBank(e.target.value)} className={input} />
+              </label>
+              <label className="block">
+                <span className={label}>วันเวลาโอน</span>
+                <input value={transferAt} onChange={(e) => setTransferAt(e.target.value)} placeholder="เช่น 04/07/26 14:30" className={input} />
+              </label>
+            </div>
+            <label className="block">
+              <span className={label}>อ้างอิง</span>
+              <input value={ref} onChange={(e) => setRef(e.target.value)} className={input} />
+            </label>
+            <label className="block">
+              <span className={label}>แนบสลิป (ถ้ามี)</span>
+              <div className="mt-0.5 flex items-center gap-2">
+                <label className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs text-slate-600 hover:bg-slate-50 cursor-pointer">
+                  {uploadingSlip ? <Loader2 size={13} className="animate-spin" /> : <Paperclip size={13} />}
+                  เลือกไฟล์
+                  <input type="file" accept="image/*" className="hidden" disabled={uploadingSlip}
+                    onChange={(e) => void pickSlip(e.target.files?.[0])} />
+                </label>
+                {slipUrl && (
+                  <span className="flex items-center gap-1 text-xs text-emerald-700">
+                    <Check size={13} /> {slipName || 'แนบแล้ว'}
+                  </span>
+                )}
+              </div>
+            </label>
+          </>
+        )}
+
+        {method === 'cheque' && (
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className={label}>เลขที่เช็ค</span>
+              <input value={chequeNo} onChange={(e) => setChequeNo(e.target.value)} className={input} />
+            </label>
+            <label className="block">
+              <span className={label}>ธนาคาร</span>
+              <input value={chequeBank} onChange={(e) => setChequeBank(e.target.value)} className={input} />
+            </label>
+            <label className="block col-span-2">
+              <span className={label}>วันที่บนเช็ค</span>
+              <input value={chequeDueDate} onChange={(e) => setChequeDueDate(e.target.value)} placeholder="เช่น 04/07/26" className={input} />
+            </label>
+          </div>
+        )}
+
+        <label className="block">
+          <span className={label}>หมายเหตุ</span>
+          <input value={note} onChange={(e) => setNote(e.target.value)} className={input} />
+        </label>
+
+        {err && <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-2">{err}</div>}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-sm">ยกเลิก</button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={!valid || saving || uploadingSlip}
+            className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold flex items-center gap-1 disabled:opacity-50"
+          >
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={13} />} บันทึก
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -485,6 +714,12 @@ function Detail({ payment, onClose, onUpdate, onPrint }: {
                 <div className="p-2 rounded-lg bg-slate-50 text-slate-600 text-xs whitespace-pre-wrap">{p.taxInvoice}</div>
               </div>
             )}
+
+            {/* cash/cheque: not a bank transfer, so it's verified HERE via a settle control
+                instead of reconciling in กระทบยอด (decision 4). */}
+            {(p.source === 'cash' || p.source === 'cheque') && (
+              <CashChequeSection payment={p} busy={busy} run={run} />
+            )}
           </div>
         </div>
 
@@ -498,6 +733,68 @@ function Detail({ payment, onClose, onUpdate, onPrint }: {
               setCheckOpen(false);
             }}
           />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Cash/cheque settle section (Detail drawer, decision 2/4) ───────────────────────────────
+// Cash and cheque don't arrive as a bank transfer line, so they're never auto-matched in
+// กระทบยอด — instead this section shows the method + (for cheque) its details, plus a settle
+// control that toggles cash '' <-> 'deposited' or cheque '' <-> 'cleared'.
+// future: a cheque could also auto-clear when a matching KBiz "Cheque Deposit … Cheque No. …"
+// line imports — not built now (see JUNO_MANUAL_ENTRY_BRIEF.md decision 4).
+const SETTLE_META: Record<'cash' | 'cheque', { pending: string; done: string; action: string; state: SettleState }> = {
+  cash: { pending: 'รอฝาก', done: 'ฝากธนาคารแล้ว', action: 'ฝากธนาคารแล้ว', state: 'deposited' },
+  cheque: { pending: 'รอเคลียร์', done: 'เคลียร์แล้ว', action: 'เคลียร์แล้ว', state: 'cleared' },
+};
+function CashChequeSection({ payment: p, busy, run }: {
+  payment: Payment;
+  busy: string;
+  run: (key: string, fn: () => Promise<{ payment: Payment }>) => Promise<void>;
+}) {
+  const kind = p.source as 'cash' | 'cheque';
+  const meta = SETTLE_META[kind];
+  const settled = p.settleState !== '';
+  const field = (lbl: string, value: React.ReactNode) => (
+    <div>
+      <div className="text-xs text-slate-400">{lbl}</div>
+      <div className="text-sm">{value || <span className="text-slate-300">—</span>}</div>
+    </div>
+  );
+
+  return (
+    <div className="px-4 py-3 border-t border-slate-100">
+      <div className="text-xs text-slate-400 mb-1.5 flex items-center gap-1">
+        <Banknote size={13} /> การรับเงิน (เงินสด/เช็ค)
+      </div>
+      <div className="grid grid-cols-2 gap-3 mb-2">
+        {field('วิธีรับเงิน', kind === 'cash' ? 'เงินสด' : 'เช็คธนาคาร')}
+        {kind === 'cheque' && field('เลขที่เช็ค', p.chequeNo)}
+        {kind === 'cheque' && field('ธนาคาร', p.chequeBank)}
+        {kind === 'cheque' && field('วันที่บนเช็ค', p.chequeDueDate)}
+      </div>
+      <div className="flex items-center gap-2">
+        <Badge cls={settled ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}>
+          {settled ? meta.done : meta.pending}
+        </Badge>
+        {!settled ? (
+          <button
+            disabled={busy !== ''}
+            onClick={() => void run('settle', () => settlePayment(p.id, meta.state))}
+            className="px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 disabled:opacity-40 flex items-center gap-1"
+          >
+            {busy === 'settle' ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} {meta.action}
+          </button>
+        ) : (
+          <button
+            disabled={busy !== ''}
+            onClick={() => void run('settle', () => settlePayment(p.id, ''))}
+            className="px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 disabled:opacity-40 flex items-center gap-1"
+          >
+            {busy === 'settle' ? <Loader2 size={12} className="animate-spin" /> : <Undo2 size={12} />} ยกเลิก
+          </button>
         )}
       </div>
     </div>

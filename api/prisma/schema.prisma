@@ -201,11 +201,13 @@ model FinanceAudit {
   @@index([resolvedAt])
 }
 
-// Juno (finance) — the structured record of every INCOMING LINE-slip payment. Written by
-// Minerva's /to-finance hook (mirrors the Google-Sheet forward); the finance department
-// works off THIS table via the Juno app, never the sheet. INCOME only for now; manual/cash
-// entry, expenses, and Express/Odoo sync are deliberately out of scope (future, same table).
-// Customer name/code are SNAPSHOT here so history stays stable if the Customer is renamed.
+// Juno (finance) — the structured record of every INCOMING payment. Most rows are written
+// by Minerva's /to-finance hook (mirrors the Google-Sheet forward, source='line'); FIN/CEO
+// can also hand-add a row in Juno itself (source='manual_transfer'|'cash'|'cheque' — see
+// JUNO_MANUAL_ENTRY_BRIEF.md). The finance department works off THIS table via the Juno app,
+// never the sheet. INCOME only for now; expenses and Express/Odoo sync are deliberately out
+// of scope (future, same table). Customer name/code are SNAPSHOT here so history stays stable
+// if the Customer is renamed.
 model Payment {
   id            String    @id @default(cuid())
   // link + snapshot
@@ -242,6 +244,18 @@ model Payment {
   // bank reconciliation (phase B): denormalized true while >=1 PaymentBankMatch link exists
   reconciled   Boolean @default(false)
   bankMatches  PaymentBankMatch[]
+  // how the row entered Juno. 'line' = Minerva LINE slip (default, all existing rows);
+  // the rest are hand-added in Juno. transfer types reconcile in กระทบยอด; cash/cheque
+  // are verified in the เงินสด/เช็ค tab instead.
+  source        String  @default("line") // line | manual_transfer | cash | cheque
+  // cash/cheque banking state (blank for transfers). cash: '' -> deposited; cheque: '' -> cleared.
+  settleState   String  @default("")     // '' | deposited | cleared
+  settledAt     DateTime?
+  settledById   String?
+  // cheque details (source='cheque' only)
+  chequeNo      String  @default("")
+  chequeBank    String  @default("")
+  chequeDueDate String  @default("")     // as-typed (free text, like transferAt)
 
   @@index([status])
   @@index([flagged])
@@ -250,6 +264,8 @@ model Payment {
   @@index([createdAt])
   @@index([reNumber])
   @@index([reconciled])
+  @@index([source])
+  @@index([settleState])
 }
 
 // ─── Juno phase B (bank import + reconciliation) ─────────────────────────

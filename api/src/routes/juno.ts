@@ -49,6 +49,8 @@ function toRow(p: {
   taxInvoiceStatus: string; salesAgentId: string | null; salesName: string; note: string;
   status: string; flagged: boolean; verifiedById: string | null; verifiedAt: Date | null;
   createdAt: Date; reNumber: string; receiptName: string; customerType: string;
+  source: string; settleState: string; settledAt: Date | null;
+  chequeNo: string; chequeBank: string; chequeDueDate: string;
 }) {
   return {
     id: p.id,
@@ -79,6 +81,13 @@ function toRow(p: {
     reNumber: p.reNumber,
     receiptName: p.receiptName,
     customerType: p.customerType,
+    // how the row was created + cash/cheque banking state (see JUNO_MANUAL_ENTRY_BRIEF.md)
+    source: p.source,
+    settleState: p.settleState,
+    settledAt: p.settledAt ? p.settledAt.toISOString() : null,
+    chequeNo: p.chequeNo,
+    chequeBank: p.chequeBank,
+    chequeDueDate: p.chequeDueDate,
   };
 }
 
@@ -92,6 +101,9 @@ const listFilterSchema = z.object({
   noVoid: z.enum(['0', '1']).optional(),   // Reports CSV: exclude voids to match the on-screen report
   from: z.string().max(40).optional(),
   to: z.string().max(40).optional(),
+  // 'transfer' = line + manual_transfer (reconciles in กระทบยอด); 'cashcheque' = cash + cheque
+  // (verified in the เงินสด/เช็ค tab); a concrete value narrows to exactly that source.
+  source: z.enum(['all', 'transfer', 'cashcheque', 'line', 'manual_transfer', 'cash', 'cheque']).optional(),
 });
 function buildListWhere(q: z.infer<typeof listFilterSchema>): Record<string, unknown> {
   const where: Record<string, unknown> = {};
@@ -101,6 +113,9 @@ function buildListWhere(q: z.infer<typeof listFilterSchema>): Record<string, unk
   if (q.tax && q.tax !== 'all') where.taxInvoiceStatus = q.tax;
   // flag/tax queues exclude voided rows to match the summary badges (§7a)
   if ((q.flagged === '1' || (q.tax && q.tax !== 'all')) && !where.status) where.status = { not: 'void' };
+  if (q.source === 'transfer') where.source = { in: ['line', 'manual_transfer'] };
+  else if (q.source === 'cashcheque') where.source = { in: ['cash', 'cheque'] };
+  else if (q.source && q.source !== 'all') where.source = q.source;
   const range = thaiDayRange(q.from, q.to);
   if (range) where.createdAt = range;
   const term = q.q?.trim();
@@ -266,15 +281,17 @@ export async function junoRoutes(app: FastifyInstance) {
 
   // GET /api/juno/summary — headline counts for the Juno dashboard / login landing.
   app.get('/api/juno/summary', async () => {
-    const [total, received, verified, recorded, flagged, taxRequested] = await Promise.all([
+    const [total, received, verified, recorded, flagged, taxRequested, cashChequePending] = await Promise.all([
       prisma.payment.count(),
       prisma.payment.count({ where: { status: 'received' } }),
       prisma.payment.count({ where: { status: 'verified' } }),
       prisma.payment.count({ where: { status: 'recorded' } }),
       prisma.payment.count({ where: { flagged: true, status: { not: 'void' } } }),
       prisma.payment.count({ where: { taxInvoiceStatus: 'requested', status: { not: 'void' } } }),
+      // เงินสด/เช็ค tab badge: hand-added cash/cheque rows not yet deposited/cleared.
+      prisma.payment.count({ where: { source: { in: ['cash', 'cheque'] }, settleState: '', status: { not: 'void' } } }),
     ]);
-    return { total, received, verified, recorded, flagged, taxRequested };
+    return { total, received, verified, recorded, flagged, taxRequested, cashChequePending };
   });
 
   // GET /api/juno/payments?q=&status=&flagged=&tax=&from=&to=&limit=
@@ -301,6 +318,81 @@ export async function junoRoutes(app: FastifyInstance) {
     const p = await prisma.payment.findUnique({ where: { id: req.params.id } });
     if (!p) return reply.code(404).send({ error: 'not_found' });
     return { payment: toRow(p) };
+  });
+
+  // POST /api/juno/payments { source, customerCode, customerName, amount, note?, senderName?,
+  // bank?, transferAt?, ref?, slipUrl?, chequeNo?, chequeBank?, chequeDueDate? } — FIN/CEO
+  // hand-add a payment that didn't arrive via Minerva's /to-finance LINE hook (see
+  // JUNO_MANUAL_ENTRY_BRIEF.md decision 2). 'line' is NOT accepted here — that source is
+  // Minerva-only. ocrAmount is left '' so the OCR-mismatch flag never fires on a manual row.
+  const createPaymentBodySchema = z.object({
+    source: z.enum(['manual_transfer', 'cash', 'cheque']),
+    customerCode: z.string().max(40).default(''),
+    customerName: z.string().max(200).default(''),
+    amount: z.string().max(40),
+    note: z.string().max(600).optional(),
+    senderName: z.string().max(200).optional(),
+    // transfer-only
+    bank: z.string().max(120).optional(),
+    transferAt: z.string().max(60).optional(),
+    ref: z.string().max(80).optional(),
+    slipUrl: z.string().max(500).optional(),
+    // cheque-only
+    chequeNo: z.string().max(60).optional(),
+    chequeBank: z.string().max(120).optional(),
+    chequeDueDate: z.string().max(60).optional(),
+  });
+  app.post('/api/juno/payments', async (req, reply) => {
+    const body = createPaymentBodySchema.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
+    const amountNum = parseFloat(body.data.amount.trim());
+    if (!Number.isFinite(amountNum) || amountNum <= 0) return reply.code(400).send({ error: 'invalid_amount' });
+
+    const p = await prisma.payment.create({
+      data: {
+        source: body.data.source,
+        customerCode: body.data.customerCode,
+        customerName: body.data.customerName,
+        amount: body.data.amount.trim(),
+        note: body.data.note?.trim() ?? '',
+        senderName: body.data.senderName?.trim() ?? '',
+        bank: body.data.bank?.trim() ?? '',
+        transferAt: body.data.transferAt?.trim() ?? '',
+        ref: body.data.ref?.trim() ?? '',
+        slipUrl: body.data.slipUrl?.trim() ?? '',
+        chequeNo: body.data.chequeNo?.trim() ?? '',
+        chequeBank: body.data.chequeBank?.trim() ?? '',
+        chequeDueDate: body.data.chequeDueDate?.trim() ?? '',
+        status: 'received',
+        salesAgentId: req.agent?.id,
+        salesName: req.agent?.name ?? '', // the entering user, so reports attribute it correctly
+      },
+    });
+    return { ok: true, payment: toRow(p) };
+  });
+
+  // POST /api/juno/payments/:id/settle { state } — cash/cheque banking state: cash goes
+  // '' -> 'deposited' (ฝากธนาคารแล้ว), cheque goes '' -> 'cleared' (เคลียร์แล้ว). Only valid
+  // for hand-added cash/cheque rows — transfers reconcile in กระทบยอด instead (decision 4).
+  // future: a cheque could also auto-clear when a matching KBiz "Cheque Deposit … Cheque No. …"
+  // line imports — not built now, left as a note for a later reconciliation pass.
+  app.post<{ Params: { id: string } }>('/api/juno/payments/:id/settle', async (req, reply) => {
+    const body = z.object({ state: z.enum(['deposited', 'cleared', '']) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
+    const cur = await prisma.payment.findUnique({ where: { id: req.params.id }, select: { id: true, source: true } });
+    if (!cur) return reply.code(404).send({ error: 'not_found' });
+    if (cur.source !== 'cash' && cur.source !== 'cheque') return reply.code(409).send({ error: 'not_cash_cheque' });
+
+    const settling = body.data.state !== '';
+    const p = await prisma.payment.update({
+      where: { id: req.params.id },
+      data: {
+        settleState: body.data.state,
+        settledAt: settling ? new Date() : null,
+        settledById: settling ? (req.agent?.id ?? null) : null,
+      },
+    });
+    return { ok: true, payment: toRow(p) };
   });
 
   // POST /api/juno/payments/:id/status { status } — advance the lifecycle.
@@ -479,6 +571,7 @@ export async function junoRoutes(app: FastifyInstance) {
       'createdAt (UTC+7)', 'code', 'customer', 'sender', 'amount', 'ocrAmount', 'bank',
       'transferAt', 'ref', 'sales', 'status', 'reNumber', 'receiptName', 'customerType',
       'flagged', 'taxInvoiceStatus', 'taxInvoice', 'note',
+      'source', 'settleState', 'chequeNo', 'chequeBank', 'chequeDueDate',
     ];
     const esc = (v: unknown): string => {
       const raw = String(v ?? '');
@@ -494,6 +587,7 @@ export async function junoRoutes(app: FastifyInstance) {
         p.customerCode, p.customerName, p.senderName, p.amount, p.ocrAmount,
         p.bank, p.transferAt, p.ref, p.salesName, p.status, p.reNumber, p.receiptName, p.customerType,
         p.flagged ? 'yes' : '', p.taxInvoiceStatus, p.taxInvoice, p.note,
+        p.source, p.settleState, p.chequeNo, p.chequeBank, p.chequeDueDate,
       ].map(esc).join(','));
     }
     reply.header('content-type', 'text/csv; charset=utf-8');

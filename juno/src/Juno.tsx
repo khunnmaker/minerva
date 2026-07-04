@@ -1,34 +1,40 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Landmark, LogOut, Search, Download, Flag, FileText, Inbox, BarChart3,
-  Loader2, AlertTriangle, CheckCircle2, X, RefreshCw, ExternalLink, Ban, Crown,
+  Landmark, LogOut, Search, Download, Flag, FileText, Inbox, BarChart3, Scale,
+  Loader2, AlertTriangle, CheckCircle2, X, RefreshCw, ExternalLink, Ban, Crown, Printer,
+  Undo2, ClipboardCheck, CheckCheck,
 } from 'lucide-react';
 
 // Portal-back link (Jupiter). URL from build-time env; the link is hidden when unset, so it
 // is completely inert until VITE_PORTAL_URL is configured (Phase 1 go-live / Phase 2 domains).
 const PORTAL_URL: string | undefined = import.meta.env.VITE_PORTAL_URL;
 import {
-  getSummary, getPayments, setStatus, setFlag, getReport, downloadCsv, baht,
-  clearSession,
+  getSummary, getPayments, setStatus, setFlag, verifyPayment, getReport, downloadCsv, baht,
+  clearSession, getBankSummary,
   type Agent, type Payment, type PaymentStatus, type Summary,
-  type Report, type PaymentFilter,
+  type Report, type PaymentFilter, type CustomerType,
 } from './lib/api';
+import PrintCovers from './PrintCovers';
+import Recon from './Recon';
 
 // No ใบกำกับภาษี tab: Prominent issues a tax invoice on EVERY sale (in Express, as part of
 // recording), so a "requested" queue would contain everything and filter nothing. The invoice
 // details captured off the slip flow (name/address/tax-ID) still show in the drawer.
-type View = 'inbox' | 'flags' | 'reports';
+type View = 'inbox' | 'flags' | 'reports' | 'recon';
 
 // Thai-locale date/time display for the inbox + drawer (house pattern, vulcan/src/Stock.tsx).
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: '2-digit' });
 const fmtDateTime = (iso: string) => new Date(iso).toLocaleString('th-TH', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' });
 
+// บันทึกแล้ว → ยืนยันใน Express: the real last step is the owner confirming the RE as paid
+// in Express over the weekend, not merely "recorded" — the label now matches that step.
 const STATUS_META: Record<PaymentStatus, { label: string; cls: string }> = {
   received: { label: 'รอตรวจ', cls: 'bg-slate-100 text-slate-600' },
   verified: { label: 'ตรวจแล้ว', cls: 'bg-sky-100 text-sky-700' },
-  recorded: { label: 'บันทึกแล้ว', cls: 'bg-emerald-100 text-emerald-700' },
+  recorded: { label: 'ยืนยันใน Express', cls: 'bg-emerald-100 text-emerald-700' },
   void: { label: 'ยกเลิก', cls: 'bg-slate-200 text-slate-500 line-through' },
 };
+const CUSTOMER_TYPES: CustomerType[] = ['โอนก่อนส่ง', 'เครดิต', 'เก็บปลายทาง'];
 function Badge({ children, cls }: { children: React.ReactNode; cls: string }) {
   return <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${cls}`}>{children}</span>;
 }
@@ -36,15 +42,19 @@ function Badge({ children, cls }: { children: React.ReactNode; cls: string }) {
 export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () => void }) {
   const [view, setView] = useState<View>('inbox');
   const [summary, setSummary] = useState<Summary | null>(null);
+  // unmatched-in bank txn count — the badge on the กระทบยอด tab (phase B)
+  const [bankUnmatched, setBankUnmatched] = useState<number | undefined>(undefined);
 
   const refreshSummary = useCallback(() => {
     getSummary().then(setSummary).catch(() => setSummary(null));
+    getBankSummary().then((s) => setBankUnmatched(s.unmatchedIn.count)).catch(() => setBankUnmatched(undefined));
   }, []);
   useEffect(() => { refreshSummary(); }, [refreshSummary]);
 
   const tabs: { key: View; label: string; icon: React.ReactNode; count?: number }[] = [
     { key: 'inbox', label: 'รายการรับเงิน', icon: <Inbox size={16} />, count: summary?.total },
     { key: 'flags', label: 'ตรวจสอบยอด', icon: <Flag size={16} />, count: summary?.flagged },
+    { key: 'recon', label: 'กระทบยอด', icon: <Scale size={16} />, count: bankUnmatched },
     { key: 'reports', label: 'รายงาน', icon: <BarChart3 size={16} /> },
   ];
 
@@ -80,7 +90,7 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
             >
               {t.icon} {t.label}
               {typeof t.count === 'number' && t.count > 0 && (
-                <span className={`ml-1 px-1.5 rounded-full text-xs ${t.key === 'flags' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
+                <span className={`ml-1 px-1.5 rounded-full text-xs ${t.key === 'flags' || t.key === 'recon' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
                   {t.count}
                 </span>
               )}
@@ -90,16 +100,20 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
       </header>
 
       <main className="max-w-7xl mx-auto p-4">
-        {view === 'reports'
-          ? <Reports />
-          : <PaymentsView view={view} onChanged={refreshSummary} />}
+        {view === 'reports' ? (
+          <Reports />
+        ) : view === 'recon' ? (
+          <Recon />
+        ) : (
+          <PaymentsView view={view} onChanged={refreshSummary} />
+        )}
       </main>
     </div>
   );
 }
 
 // ── Payments list + detail (inbox / flags share this) ──────────────────────
-function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports'>; onChanged: () => void }) {
+function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports' | 'recon'>; onChanged: () => void }) {
   const [q, setQ] = useState('');
   const [status, setStatusFilter] = useState<'all' | PaymentStatus>('all');
   const [from, setFrom] = useState('');
@@ -108,6 +122,8 @@ function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports'>; onC
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<Payment | null>(null);
+  // non-null → render the print overlay (see PrintCovers) instead of the inbox
+  const [printQueue, setPrintQueue] = useState<Payment[] | null>(null);
 
   const filter: PaymentFilter = {
     q: q.trim() || undefined,
@@ -153,6 +169,13 @@ function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports'>; onC
     onChanged();
   }
 
+  // The daily flow: filter today + ตรวจแล้ว → one click prints the whole stack.
+  const verifiedInView = rows.filter((r) => r.status === 'verified');
+
+  if (printQueue) {
+    return <PrintCovers payments={printQueue} onDone={() => setPrintQueue(null)} />;
+  }
+
   return (
     <div className="flex gap-4">
       <div className="flex-1 min-w-0">
@@ -173,10 +196,9 @@ function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports'>; onC
               className="px-2 py-2 rounded-lg border border-slate-300 text-sm bg-white"
             >
               <option value="all">ทุกสถานะ</option>
-              <option value="received">รอตรวจ</option>
-              <option value="verified">ตรวจแล้ว</option>
-              <option value="recorded">บันทึกแล้ว</option>
-              <option value="void">ยกเลิก</option>
+              {(['received', 'verified', 'recorded', 'void'] as PaymentStatus[]).map((s) => (
+                <option key={s} value={s}>{STATUS_META[s].label}</option>
+              ))}
             </select>
           )}
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
@@ -186,6 +208,15 @@ function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports'>; onC
           <button onClick={load} className="p-2 rounded-lg border border-slate-300 text-slate-500 hover:bg-slate-50" title="รีเฟรช">
             <RefreshCw size={15} />
           </button>
+          {view === 'inbox' && verifiedInView.length > 0 && (
+            <button
+              onClick={() => setPrintQueue(verifiedInView)}
+              className="flex items-center gap-1 px-3 py-2 rounded-lg bg-sky-600 text-white text-sm hover:bg-sky-700"
+              title="พิมพ์ใบปะหน้าทุกรายการที่ตรวจแล้วในรายการที่กรองอยู่นี้"
+            >
+              <Printer size={15} /> พิมพ์ใบปะหน้า ({verifiedInView.length})
+            </button>
+          )}
           <button
             onClick={() => downloadCsv(filter).catch(() => setError('ดาวน์โหลดไม่สำเร็จ'))}
             className="flex items-center gap-1 px-3 py-2 rounded-lg bg-slate-800 text-white text-sm hover:bg-slate-700"
@@ -210,8 +241,8 @@ function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports'>; onC
                   <th className="text-left font-medium px-3 py-2">วันที่</th>
                   <th className="text-left font-medium px-3 py-2">ลูกค้า</th>
                   <th className="text-right font-medium px-3 py-2">ยอด</th>
-                  <th className="text-left font-medium px-3 py-2 hidden md:table-cell">ธนาคาร</th>
-                  <th className="text-left font-medium px-3 py-2 hidden lg:table-cell">ขาย</th>
+                  <th className="text-left font-medium px-3 py-2 hidden md:table-cell w-[120px]">ธนาคาร</th>
+                  <th className="text-left font-medium px-3 py-2 hidden md:table-cell">RE</th>
                   <th className="text-left font-medium px-3 py-2">สถานะ</th>
                 </tr>
               </thead>
@@ -224,15 +255,17 @@ function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports'>; onC
                   >
                     <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtDate(p.createdAt)}</td>
                     <td className="px-3 py-2">
-                      <div className="font-medium">{p.customerName || <span className="text-slate-400">—</span>}</div>
-                      <div className="text-xs text-slate-400">{p.customerCode}</div>
+                      <div className="font-bold text-[15px] text-slate-800 leading-tight">{p.customerCode || <span className="text-slate-300 font-normal">—</span>}</div>
+                      <div className="text-xs text-slate-500 leading-tight">{p.customerName}</div>
                     </td>
                     <td className="px-3 py-2 text-right font-semibold whitespace-nowrap">
                       {baht(p.amountNum)}
                       {p.mismatch && <AlertTriangle size={13} className="inline ml-1 text-rose-500" />}
                     </td>
-                    <td className="px-3 py-2 text-slate-500 hidden md:table-cell">{p.bank}</td>
-                    <td className="px-3 py-2 text-slate-500 hidden lg:table-cell">{p.salesName}</td>
+                    <td className="px-3 py-2 text-slate-500 hidden md:table-cell"><div className="max-w-[110px] truncate" title={p.bank}>{p.bank}</div></td>
+                    <td className="px-3 py-2 text-slate-500 hidden md:table-cell whitespace-nowrap">
+                      {p.reNumber || <span className="text-slate-300">—</span>}
+                    </td>
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-1">
                         <Badge cls={STATUS_META[p.status].cls}>{STATUS_META[p.status].label}</Badge>
@@ -248,19 +281,31 @@ function PaymentsView({ view, onChanged }: { view: Exclude<View, 'reports'>; onC
       </div>
 
       {selected && (
-        <Detail payment={selected} onClose={() => setSelected(null)} onUpdate={applyUpdate} />
+        <Detail
+          payment={selected}
+          onClose={() => setSelected(null)}
+          onUpdate={applyUpdate}
+          onPrint={(p) => setPrintQueue([p])}
+        />
       )}
     </div>
   );
 }
 
 // ── Slip verifier + action drawer ──────────────────────────────────────────
-function Detail({ payment, onClose, onUpdate }: {
-  payment: Payment; onClose: () => void; onUpdate: (p: Payment) => void;
+function Detail({ payment, onClose, onUpdate, onPrint }: {
+  payment: Payment; onClose: () => void; onUpdate: (p: Payment) => void; onPrint: (p: Payment) => void;
 }) {
   const [busy, setBusy] = useState('');
   const [flagNote, setFlagNote] = useState('');
+  const [flagOpen, setFlagOpen] = useState(false);
   const [error, setError] = useState('');
+  const [checkOpen, setCheckOpen] = useState(false);
+  // informational only — cleared whenever the drawer moves to a different payment
+  const [reDuplicates, setReDuplicates] = useState(0);
+  useEffect(() => {
+    setFlagOpen(false); setFlagNote(''); setReDuplicates(0); setError('');
+  }, [payment.id]);
 
   async function run(key: string, fn: () => Promise<{ payment: Payment }>) {
     setBusy(key);
@@ -284,121 +329,282 @@ function Detail({ payment, onClose, onUpdate }: {
     </div>
   );
 
+  // One compact icon in the sticky action rail. `active` tints it as the current state;
+  // busy shows a spinner in place of the icon. Tooltips carry the Thai names.
+  const rail = (
+    key: string,
+    title: string,
+    icon: React.ReactNode,
+    onClick: () => void,
+    opts: { disabled?: boolean; active?: boolean; danger?: boolean } = {},
+  ) => (
+    <button
+      disabled={busy !== '' || opts.disabled}
+      onClick={onClick}
+      title={title}
+      className={`p-1.5 rounded-lg border disabled:opacity-30 shrink-0 ${
+        opts.active
+          ? 'bg-emerald-600 text-white border-emerald-600'
+          : opts.danger
+            ? 'border-slate-200 text-slate-400 hover:bg-rose-50 hover:text-rose-600'
+            : 'border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+      }`}
+    >
+      {busy === key ? <Loader2 size={16} className="animate-spin" /> : icon}
+    </button>
+  );
+
   return (
-    <div className="fixed inset-0 z-30 bg-slate-900/40 md:static md:z-auto md:bg-transparent md:w-[380px] md:shrink-0">
-      <div className="absolute inset-x-0 bottom-0 top-10 md:static bg-white rounded-t-2xl md:rounded-xl border border-slate-200 overflow-y-auto md:sticky md:top-[104px] md:max-h-[calc(100vh-120px)]">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
-          <div className="font-semibold">รายละเอียดการรับเงิน</div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+    <div className="fixed inset-0 z-30 bg-slate-900/40 md:static md:z-auto md:bg-transparent md:w-[380px] xl:w-[620px] md:shrink-0">
+      <div className="absolute inset-x-0 bottom-0 top-10 md:static bg-white rounded-t-2xl md:rounded-xl border border-slate-200 overflow-y-auto md:sticky md:top-[104px] md:h-[calc(100vh-112px)]">
+        {/* Sticky header = status + RE on the left, EVERY action as an icon on the right
+            (owner request 2026-07-03: actions reachable at any scroll position, add/remove
+            any time). Hover an icon for its Thai name. */}
+        <div className="sticky top-0 z-10 bg-white px-3 py-2 border-b border-slate-100 rounded-t-2xl md:rounded-t-xl">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <Badge cls={STATUS_META[p.status].cls}>{STATUS_META[p.status].label}</Badge>
+              {p.reNumber && <span className="text-xs font-bold text-slate-700 whitespace-nowrap truncate">RE {p.reNumber}</span>}
+              {p.flagged && <Flag size={13} className="text-rose-500 shrink-0" />}
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              {rail('received', STATUS_META.received.label, <Undo2 size={16} />, () => run('received', () => setStatus(p.id, 'received')), {
+                disabled: p.status === 'received',
+              })}
+              {/* 'verified' only via the check dialog — the one path that supplies the RE */}
+              {rail('check', p.reNumber ? 'แก้ไขข้อมูลใบเสร็จ' : STATUS_META.verified.label, <ClipboardCheck size={16} />, () => setCheckOpen(true), {
+                disabled: p.status === 'void',
+                active: p.status === 'verified',
+              })}
+              {rail('recorded', STATUS_META.recorded.label, <CheckCheck size={16} />, () => run('recorded', () => setStatus(p.id, 'recorded')), {
+                disabled: p.status === 'recorded' || p.status === 'void',
+                active: p.status === 'recorded',
+              })}
+              {rail('print', p.reNumber ? 'พิมพ์ใบปะหน้า' : 'พิมพ์ใบปะหน้า (ต้องมีเลข RE ก่อน)', <Printer size={16} />, () => onPrint(p), {
+                disabled: !p.reNumber,
+              })}
+              {rail('flag', p.flagged ? 'เคลียร์ธงตรวจสอบ' : 'ติดธงตรวจสอบยอด', <Flag size={16} />, () => {
+                if (p.flagged) void run('flag', () => setFlag(p.id, false));
+                else setFlagOpen((v) => !v);
+              }, { active: p.flagged })}
+              {rail('void', 'ยกเลิก (ตัดออกจากรายงาน)', <Ban size={16} />, () => run('void', () => setStatus(p.id, 'void')), {
+                disabled: p.status === 'void',
+                danger: true,
+              })}
+              <button onClick={onClose} title="ปิด" className="p-1.5 text-slate-400 hover:text-slate-600 shrink-0"><X size={18} /></button>
+            </div>
+          </div>
+          {/* transient flag-note row (setting a flag can carry a note for the audit trail) */}
+          {flagOpen && !p.flagged && (
+            <div className="mt-2 flex items-center gap-1.5">
+              <input
+                value={flagNote}
+                onChange={(e) => setFlagNote(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') void run('flag', () => setFlag(p.id, true, flagNote.trim() || undefined)).then(() => setFlagOpen(false)); }}
+                placeholder="หมายเหตุ (ถ้ามี)"
+                autoFocus
+                className="flex-1 px-2 py-1.5 rounded-lg border border-slate-300 text-sm"
+              />
+              <button
+                disabled={busy !== ''}
+                onClick={() => void run('flag', () => setFlag(p.id, true, flagNote.trim() || undefined)).then(() => setFlagOpen(false))}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 disabled:opacity-40 whitespace-nowrap"
+              >
+                ติดธง
+              </button>
+            </div>
+          )}
         </div>
 
         {error && <div className="mx-4 mt-2 p-2 rounded-lg bg-rose-50 text-rose-700 text-xs flex items-center gap-1"><AlertTriangle size={13} /> {error}</div>}
-
-        {/* slip image */}
-        <div className="p-4">
-          {p.slipUrl ? (
-            <a href={p.slipUrl} target="_blank" rel="noreferrer" className="block relative group">
-              <img src={p.slipUrl} alt="สลิป" className="w-full rounded-lg border border-slate-200 bg-slate-50" />
-              <span className="absolute top-2 right-2 bg-black/60 text-white rounded-md p-1 opacity-0 group-hover:opacity-100">
-                <ExternalLink size={14} />
-              </span>
-            </a>
-          ) : (
-            <div className="text-center text-slate-400 text-sm py-6 border border-dashed border-slate-200 rounded-lg">ไม่มีสลิป</div>
-          )}
-        </div>
-
-        {/* parsed fields */}
-        <div className="px-4 grid grid-cols-2 gap-3">
-          {field('ชื่อลูกค้า', p.customerName)}
-          {field('รหัส', p.customerCode)}
-          {field('ผู้โอน (บนสลิป)', p.senderName)}
-          {field('ธนาคาร', p.bank)}
-          {field('ยอดที่ยืนยัน', <span className="font-semibold">{baht(p.amountNum)}</span>)}
-          {field('ยอดที่ AI อ่าน', p.mismatch
-            ? <span className="text-rose-600 font-semibold">{p.ocrAmount || '—'}</span>
-            : (p.ocrAmount || '—'))}
-          {field('เวลาโอน', p.transferAt)}
-          {field('อ้างอิง', p.ref)}
-          {field('พนักงานขาย', p.salesName)}
-          {field('วันที่ส่งเข้า', fmtDateTime(p.createdAt))}
-        </div>
-
-        {p.mismatch && (
-          <div className="mx-4 mt-3 p-2 rounded-lg bg-rose-50 text-rose-700 text-xs flex items-start gap-1">
-            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-            ยอดที่พนักงานกรอกไม่ตรงกับที่ AI อ่านจากสลิป — ควรตรวจสอบ
+        {reDuplicates > 0 && (
+          <div className="mx-4 mt-2 px-2 py-1 rounded-lg bg-amber-50 text-amber-700 text-xs flex items-center gap-1">
+            <AlertTriangle size={13} /> เลข RE นี้ซ้ำกับรายการอื่น ({reDuplicates})
           </div>
         )}
 
-        {p.note && (
-          <div className="mx-4 mt-3 p-2 rounded-lg bg-slate-50 text-slate-600 text-xs whitespace-pre-wrap">{p.note}</div>
-        )}
+        <div className="flex flex-col xl:flex-row xl:gap-2">
+          <div className="xl:w-[45%] xl:shrink-0">
+            {/* slip image */}
+            <div className="p-4">
+              {p.slipUrl ? (
+                <a href={p.slipUrl} target="_blank" rel="noreferrer" className="block relative group">
+                  <img src={p.slipUrl} alt="สลิป" className="w-full rounded-lg border border-slate-200 bg-slate-50" />
+                  <span className="absolute top-2 right-2 bg-black/60 text-white rounded-md p-1 opacity-0 group-hover:opacity-100">
+                    <ExternalLink size={14} />
+                  </span>
+                </a>
+              ) : (
+                <div className="text-center text-slate-400 text-sm py-6 border border-dashed border-slate-200 rounded-lg">ไม่มีสลิป</div>
+              )}
+            </div>
+          </div>
 
-        {/* lifecycle actions */}
-        <div className="px-4 py-3 mt-2 border-t border-slate-100">
-          <div className="text-xs text-slate-400 mb-1.5">สถานะ · <Badge cls={STATUS_META[p.status].cls}>{STATUS_META[p.status].label}</Badge></div>
-          <div className="flex flex-wrap gap-1.5">
-            {(['received', 'verified', 'recorded'] as PaymentStatus[]).map((s) => (
+          <div className="xl:flex-1 xl:min-w-0 xl:border-l xl:border-slate-100">
+            {/* parsed fields */}
+            <div className="px-4 grid grid-cols-2 gap-3">
+              {field('ชื่อลูกค้า', p.customerName)}
+              {field('รหัส', p.customerCode)}
+              {field('ผู้โอน (บนสลิป)', p.senderName)}
+              {field('ธนาคาร', p.bank)}
+              {field('ยอดที่ยืนยัน', <span className="font-semibold">{baht(p.amountNum)}</span>)}
+              {field('ยอดที่ AI อ่าน', p.mismatch
+                ? <span className="text-rose-600 font-semibold">{p.ocrAmount || '—'}</span>
+                : (p.ocrAmount || '—'))}
+              {field('เวลาโอน', p.transferAt)}
+              {field('อ้างอิง', p.ref)}
+              {field('พนักงานขาย', p.salesName)}
+              {field('วันที่ส่งเข้า', fmtDateTime(p.createdAt))}
+              {p.reNumber && field('ชื่อบนใบเสร็จ', p.receiptName)}
+              {p.reNumber && field('ประเภทลูกค้า', p.customerType)}
+            </div>
+
+            {p.mismatch && (
+              <div className="mx-4 mt-3 p-2 rounded-lg bg-rose-50 text-rose-700 text-xs flex items-start gap-1">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                ยอดที่พนักงานกรอกไม่ตรงกับที่ AI อ่านจากสลิป — ควรตรวจสอบ
+              </div>
+            )}
+
+            {p.note && (
+              <div className="mx-4 mt-3 p-2 rounded-lg bg-slate-50 text-slate-600 text-xs whitespace-pre-wrap">{p.note}</div>
+            )}
+
+            {/* tax-invoice DETAILS only (no status tracking): every sale gets a ใบกำกับภาษี,
+                issued in Express as part of recording — but the name/address/tax-ID the customer
+                supplied still matters when issuing, so show it whenever it was captured. */}
+            {p.taxInvoice && (
+              <div className="px-4 py-3 border-t border-slate-100">
+                <div className="text-xs text-slate-400 mb-1.5 flex items-center gap-1">
+                  <FileText size={13} /> ข้อมูลใบกำกับภาษีจากลูกค้า
+                </div>
+                <div className="p-2 rounded-lg bg-slate-50 text-slate-600 text-xs whitespace-pre-wrap">{p.taxInvoice}</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {checkOpen && (
+          <CheckDialog
+            payment={p}
+            onClose={() => setCheckOpen(false)}
+            onSaved={(updated, dup) => {
+              onUpdate(updated);
+              setReDuplicates(dup);
+              setCheckOpen(false);
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Check dialog (the RE check FIN performs when the receipt is issued in Express) ─────────
+// Small modal, NOT a browser prompt: this is the one place a payment can become 'verified'.
+function CheckDialog({ payment, onClose, onSaved }: {
+  payment: Payment;
+  onClose: () => void;
+  onSaved: (p: Payment, reDuplicates: number) => void;
+}) {
+  const reRef = useRef<HTMLInputElement>(null);
+  const [reNumber, setReNumber] = useState(payment.reNumber);
+  const [receiptName, setReceiptName] = useState(
+    payment.receiptName || payment.taxInvoice.split('\n')[0]?.trim() || payment.customerName,
+  );
+  const [customerType, setCustomerType] = useState<CustomerType>(payment.customerType);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => { reRef.current?.focus(); }, []);
+
+  // live-strip a typed "RE"/"re" prefix as FIN types (they naturally write "RE6900123")
+  function onReChange(v: string) {
+    setReNumber(v.replace(/^re/i, ''));
+  }
+
+  const digits = reNumber.trim();
+  const valid = /^\d{7}$/.test(digits);
+
+  async function save() {
+    if (!valid || saving) return;
+    setSaving(true);
+    setErr('');
+    try {
+      const res = await verifyPayment(payment.id, {
+        reNumber: digits,
+        receiptName: receiptName.trim(),
+        customerType,
+      });
+      onSaved(res.payment, res.reDuplicates);
+    } catch (e) {
+      setErr((e as Error).message === 'unauthorized' ? 'เซสชันหมดอายุ — กรุณาเข้าสู่ระบบใหม่' : 'บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-4 w-full max-w-sm space-y-3" onClick={(e) => e.stopPropagation()}>
+        <div className="font-semibold text-slate-800 flex items-center gap-1.5">
+          <FileText size={16} className="text-emerald-700" /> ตรวจแล้ว — ออก RE ใน Express
+        </div>
+
+        <label className="block">
+          <span className="text-xs text-slate-500">เลขที่ใบเสร็จ (RE)</span>
+          <input
+            ref={reRef}
+            value={reNumber}
+            onChange={(e) => onReChange(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && valid) save(); }}
+            placeholder="เช่น 6900123"
+            className={`w-full mt-0.5 px-2.5 py-1.5 rounded-lg border text-sm focus:outline-none focus:ring-2 ${
+              reNumber && !valid ? 'border-rose-300 focus:ring-rose-300' : 'border-slate-300 focus:ring-emerald-400'
+            }`}
+          />
+          {reNumber && !valid && <span className="text-[11px] text-rose-600">ต้องเป็นตัวเลข 7 หลัก</span>}
+        </label>
+
+        <label className="block">
+          <span className="text-xs text-slate-500">ชื่อบนใบเสร็จ</span>
+          <input
+            value={receiptName}
+            onChange={(e) => setReceiptName(e.target.value)}
+            placeholder="ชื่อบนใบเสร็จ"
+            className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
+          />
+        </label>
+
+        <div>
+          <span className="text-xs text-slate-500">ประเภทลูกค้า</span>
+          <div className="mt-1 flex rounded-lg border border-slate-300 overflow-hidden">
+            {CUSTOMER_TYPES.map((t) => (
               <button
-                key={s}
-                // a voided payment must be explicitly restored to 'received' before re-verifying
-                // (server 409s verify/record while void; รอตรวจ stays enabled as the un-void path)
-                disabled={busy !== '' || p.status === s || (p.status === 'void' && s !== 'received')}
-                onClick={() => run(s, () => setStatus(p.id, s))}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border disabled:opacity-40 ${
-                  p.status === s ? 'bg-emerald-600 text-white border-emerald-600' : 'border-slate-300 hover:bg-slate-50'
-                }`}
+                key={t}
+                type="button"
+                onClick={() => setCustomerType((prev) => (prev === t ? '' : t))}
+                className={`flex-1 px-2 py-1.5 text-xs ${customerType === t ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
               >
-                {busy === s ? <Loader2 size={13} className="animate-spin" /> : STATUS_META[s].label}
+                {t}
               </button>
             ))}
-            <button
-              disabled={busy !== '' || p.status === 'void'}
-              onClick={() => run('void', () => setStatus(p.id, 'void'))}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-medium border border-slate-300 text-slate-500 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40 flex items-center gap-1"
-            >
-              <Ban size={13} /> ยกเลิก
-            </button>
           </div>
         </div>
 
-        {/* flag */}
-        <div className="px-4 py-3 border-t border-slate-100">
-          <div className="text-xs text-slate-400 mb-1.5">
-            {p.flagged ? <span className="text-rose-600 font-semibold flex items-center gap-1"><Flag size={13} /> ติดธงตรวจสอบ</span> : 'ตรวจสอบยอด'}
-          </div>
-          {!p.flagged && (
-            <input
-              value={flagNote}
-              onChange={(e) => setFlagNote(e.target.value)}
-              placeholder="หมายเหตุ (ถ้ามี)"
-              className="w-full px-2 py-1.5 mb-1.5 rounded-lg border border-slate-300 text-sm"
-            />
-          )}
+        {err && <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-2">{err}</div>}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-sm">ยกเลิก</button>
           <button
-            disabled={busy !== ''}
-            onClick={() => run('flag', () => setFlag(p.id, !p.flagged, flagNote.trim() || undefined))}
-            className={`w-full px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-40 flex items-center justify-center gap-1 ${
-              p.flagged ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
-                        : 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
-            }`}
+            type="button"
+            onClick={save}
+            disabled={!valid || saving}
+            className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold flex items-center gap-1 disabled:opacity-50"
           >
-            {busy === 'flag' ? <Loader2 size={14} className="animate-spin" /> : p.flagged ? <><CheckCircle2 size={14} /> เคลียร์ธง</> : <><Flag size={14} /> ติดธง</>}
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={13} />} บันทึก
           </button>
         </div>
-
-        {/* tax-invoice DETAILS only (no status tracking): every sale gets a ใบกำกับภาษี,
-            issued in Express as part of recording — but the name/address/tax-ID the customer
-            supplied still matters when issuing, so show it whenever it was captured. */}
-        {p.taxInvoice && (
-          <div className="px-4 py-3 border-t border-slate-100">
-            <div className="text-xs text-slate-400 mb-1.5 flex items-center gap-1">
-              <FileText size={13} /> ข้อมูลใบกำกับภาษีจากลูกค้า
-            </div>
-            <div className="p-2 rounded-lg bg-slate-50 text-slate-600 text-xs whitespace-pre-wrap">{p.taxInvoice}</div>
-          </div>
-        )}
       </div>
     </div>
   );

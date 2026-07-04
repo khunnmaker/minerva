@@ -3,29 +3,97 @@ import { hashPassword, verifyPassword } from '../auth/password.js';
 import { HISTORY_KB } from '../kb/historyKb.js';
 import { embed, embeddingsAvailable, storeKbEmbedding, kbEmbeddingText, kbTextHash } from '../memory/embeddings.js';
 import { prewarmDraftCache } from '../llm/prewarm.js';
+import { env } from '../env.js';
 
 // Canonical staff list — the single source of truth for who can log in.
 // Synced on every boot (see syncStaff): names/roles come from here, passwords
 // from the named env var, and any account NOT listed here is removed. Passwords
 // are never committed — only the env-var NAME lives in code.
-//   SEED_PASSWORD  — admin/supervisor login
-//   STAFF_PASSWORD — shared team (agent) login
+//   SEED_PASSWORD     — admin/supervisor login
+//   STAFF_PASSWORD    — shared team (agent) login
+//   CERES_MD_PASSWORD — Nee's Ceres md login
 const STAFF = [
   { email: 'drm@prominent.local', name: 'Dr. M', role: 'supervisor', pwEnv: 'SEED_PASSWORD' },
   { email: 'nadeer@prominent.local', name: 'NaDeer', role: 'agent', pwEnv: 'STAFF_PASSWORD' },
   { email: 'anny@prominent.local', name: 'Anny', role: 'agent', pwEnv: 'STAFF_PASSWORD' },
   { email: 'noey@prominent.local', name: 'Noey', role: 'agent', pwEnv: 'STAFF_PASSWORD' },
+  { email: 'md@prominent.local', name: 'Nee', role: 'md', pwEnv: 'CERES_MD_PASSWORD' },
 ] as const;
+
+// Canonical Ceres messenger roster — each logs in with their own PIN (see
+// CERES_MESSENGER_PINS, parsed with parseAgentPins below). Exported so
+// ensureCeres.ts can seed the matching CeresParty rows off the same list.
+export const MESSENGERS = [
+  { slug: 'ta', name: 'ต้า' },
+  { slug: 'arm', name: 'อาร์ม' },
+  { slug: 'man', name: 'แมน' },
+  { slug: 'boonson', name: 'บุญสอน' },
+  { slug: 'kaew', name: 'แก้ว' },
+  { slug: 'lungko', name: 'ลุงโก๊ะ' },
+  { slug: 'wong', name: 'วง' },
+  { slug: 'paeng', name: 'แป๋ง' },
+  { slug: 'nun', name: 'นุ่น' },
+  { slug: 'nee', name: 'นี' },
+  { slug: 'pin', name: 'พิณ' },
+  { slug: 'lekmaeban', name: 'เล็กแม่บ้าน' },
+  { slug: 'da', name: 'ด้า' },
+] as const;
+
+export const messengerEmail = (slug: string): string => `m-${slug}@prominent.local`;
+
+// Weak/common 6-digit PINs — still accepted (never lock someone out over this) but
+// worth a boot-log nudge to change them. Never paired with the actual value in a log.
+const WEAK_PINS = new Set([
+  '123456', '654321', '000000', '111111', '222222', '333333', '444444',
+  '555555', '666666', '777777', '888888', '999999', '112233', '121212',
+]);
+
+// Parse a PIN map env ("name:pin,name:pin") → Map of key → 6-digit PIN. Used for BOTH
+// AGENT_PINS (console/Vulcan/Juno staff, keyed by email local-part) and
+// CERES_MESSENGER_PINS (Ceres messengers, keyed by slug). Invalid entries are warned
+// and skipped (a malformed env must never lock anyone out — agents fall back to
+// STAFF_PASSWORD; a messenger without a valid PIN just isn't provisioned yet).
+// Weak PINs are accepted but warned.
+export function parseAgentPins(raw: string, label = 'AGENT_PINS'): Map<string, string> {
+  const pins = new Map<string, string>();
+  for (const entry of raw.split(',')) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue; // trailing/double comma — ignore silently
+    const idx = trimmed.indexOf(':');
+    const name = idx === -1 ? trimmed : trimmed.slice(0, idx);
+    const pin = idx === -1 ? '' : trimmed.slice(idx + 1);
+    if (!name || !/^\d{6}$/.test(pin)) {
+      // Never log the raw entry — it may contain a real (if malformed-context) PIN.
+      // eslint-disable-next-line no-console
+      console.warn(`[staff] ${label} entry ignored (want name:6digits): ${name || '(blank)'}:******`);
+      continue;
+    }
+    if (WEAK_PINS.has(pin)) {
+      // eslint-disable-next-line no-console
+      console.warn(`[staff] weak PIN for ${name} — consider changing it`);
+    }
+    pins.set(name, pin);
+  }
+  return pins;
+}
 
 // Reconcile the agent table to the canonical STAFF list on boot. Idempotent:
 // upserts names/roles/passwords and prunes stale logins. A missing password env
 // skips just that account (never seeds a blank/default password); pruning is
 // guarded so a misconfigured env can never delete the last working login.
+//
+// Agents may log in with a per-person PIN (AGENT_PINS) instead of the shared
+// STAFF_PASSWORD; the supervisor (Dr. M) always uses SEED_PASSWORD and never
+// consults the PIN map. Kept self-contained/surgical — a sibling app's boot-sync
+// additions land in this file later.
 async function syncStaff(): Promise<void> {
-  const emails = STAFF.map((s) => s.email);
+  const pins = parseAgentPins(env.AGENT_PINS);
   let allProvisioned = true;
   for (const s of STAFF) {
-    const pw = process.env[s.pwEnv];
+    const localPart = s.email.split('@')[0];
+    // Agents check their PIN first, falling back to the shared STAFF_PASSWORD; the
+    // supervisor is never eligible for a PIN.
+    const pw = s.role === 'agent' ? (pins.get(localPart) ?? process.env[s.pwEnv]) : process.env[s.pwEnv];
     if (!pw) {
       allProvisioned = false;
       // eslint-disable-next-line no-console
@@ -36,9 +104,9 @@ async function syncStaff(): Promise<void> {
       where: { email: s.email },
       select: { passwordHash: true },
     });
-    // Only (re)hash when the account is new or the env password actually changed —
+    // Only (re)hash when the account is new or the effective password actually changed —
     // bcrypt salts differ per call, so hashing every boot would rewrite the row for
-    // no reason; verifyPassword still heals a rotated password.
+    // no reason; verifyPassword still heals a rotated password/PIN.
     const passwordHash =
       existing && (await verifyPassword(pw, existing.passwordHash))
         ? existing.passwordHash
@@ -49,9 +117,42 @@ async function syncStaff(): Promise<void> {
       create: { email: s.email, name: s.name, role: s.role, passwordHash },
     });
   }
-  // Prune stale accounts only once EVERY canonical account is provisioned, so the
-  // old logins keep working until the new ones are fully in place (e.g. before
-  // STAFF_PASSWORD is set) and a misconfigured env can never lock everyone out.
+
+  // Each messenger logs in with their own 6-digit PIN (env CERES_MESSENGER_PINS,
+  // "slug:pin,…" — same parser/rules as AGENT_PINS above). Same per-account upsert
+  // mechanism as STAFF; a messenger with no valid PIN is skipped (warn) and marks the
+  // boot as not-fully-provisioned, same safety semantics as a missing STAFF password.
+  const messengerPins = parseAgentPins(env.CERES_MESSENGER_PINS, 'CERES_MESSENGER_PINS');
+  for (const m of MESSENGERS) {
+    const pin = messengerPins.get(m.slug);
+    const email = messengerEmail(m.slug);
+    if (!pin) {
+      allProvisioned = false;
+      // eslint-disable-next-line no-console
+      console.warn(`[staff] no PIN configured for messenger "${m.slug}" — skipping ${email}`);
+      continue;
+    }
+    const existing = await prisma.agent.findUnique({
+      where: { email },
+      select: { passwordHash: true },
+    });
+    const passwordHash =
+      existing && (await verifyPassword(pin, existing.passwordHash))
+        ? existing.passwordHash
+        : await hashPassword(pin);
+    await prisma.agent.upsert({
+      where: { email },
+      update: { name: m.name, role: 'messenger', passwordHash },
+      create: { email, name: m.name, role: 'messenger', passwordHash },
+    });
+  }
+
+  // Prune stale accounts only once EVERY canonical account (STAFF + messengers) is
+  // provisioned, so the old logins keep working until the new ones are fully in
+  // place (e.g. before CERES_MESSENGER_PINS is set) and a misconfigured env can
+  // never lock everyone out. CRITICAL: the prune list must include messenger
+  // emails, or every Ceres login would be deleted on each boot.
+  const emails = [...STAFF.map((s) => s.email), ...MESSENGERS.map((m) => messengerEmail(m.slug))];
   if (allProvisioned) {
     const { count } = await prisma.agent.deleteMany({ where: { email: { notIn: emails } } });
     if (count > 0) {

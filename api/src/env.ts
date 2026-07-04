@@ -29,6 +29,10 @@ const schema = z.object({
 
   WEB_ORIGIN: z.string().default('http://localhost:5173'),
 
+  // Per-agent 6-digit PINs "name:pin,name:pin" (name = email local part). An agent
+  // absent from the list falls back to STAFF_PASSWORD.
+  AGENT_PINS: z.string().default(''),
+
   // Where customer images are stored. In prod set this to a mounted persistent
   // volume path (e.g. /data); defaults to ./uploads for local dev.
   UPLOAD_DIR: z.string().default(''),
@@ -36,6 +40,13 @@ const schema = z.object({
   // Finance "แจ้งการเงิน" → Google Sheet via an Apps Script web-app webhook + shared secret.
   FINANCE_SHEET_WEBHOOK: z.string().default(''),
   FINANCE_SHEET_SECRET: z.string().default(''),
+
+  // Ceres (expenses & petty cash) — see docs/CERES_BRIEF.md.
+  CERES_MD_PASSWORD: z.string().default(''),
+  CERES_MESSENGER_PINS: z.string().default(''),   // "ta:123456,arm:234567,…" slug:pin pairs
+  CERES_FLOOR: z.coerce.number().default(40000),
+  CERES_CEO_THRESHOLD: z.coerce.number().default(5000),
+  CERES_CEO_LINE_USER_ID: z.string().default(''),
 });
 
 const parsed = schema.safeParse(process.env);

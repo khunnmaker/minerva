@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest, preHandlerHookHandler } from 'fastify';
-import { verifyToken, hasAppAccess, type AuthedAgent, type Role, type AppName } from './jwt.js';
+import { verifyToken, ALL_ROLES, hasAppAccess, type AuthedAgent, type Role, type AppName } from './jwt.js';
 import { prisma } from '../db/prisma.js';
 
 // Make request.agent available everywhere, typed.
@@ -46,6 +46,20 @@ export async function authedAgentFromToken(
 // preHandler: require a valid token backed by a live account (any of the three roles); attaches request.agent.
 export const requireAuth: preHandlerHookHandler = async (req: FastifyRequest, reply: FastifyReply) => {
   const agent = await authedAgentFromToken(bearer(req));
+  if (!agent) {
+    return reply.code(401).send({ error: 'unauthorized' });
+  }
+  req.agent = agent;
+};
+
+// preHandler: like requireAuth but explicitly admits EVERY live authenticated role
+// (supervisor, md, employee — see ALL_ROLES in auth/jwt.ts). Functionally the same as
+// requireAuth today (whose default `allowed` is already all live roles), but named for
+// intent: use for endpoints that are open to every account and then gate per-app INSIDE
+// the handler with hasAppAccess (e.g. the Jupiter portal badges route). Deriving from
+// ALL_ROLES avoids silently omitting a future role.
+export const requireAnyAuth: preHandlerHookHandler = async (req: FastifyRequest, reply: FastifyReply) => {
+  const agent = await authedAgentFromToken(bearer(req), ALL_ROLES);
   if (!agent) {
     return reply.code(401).send({ error: 'unauthorized' });
   }

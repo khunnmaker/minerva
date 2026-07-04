@@ -5,6 +5,11 @@ import { env } from '../env.js';
 // can carry them after boot (ensureSeeded heals every row to one of the three below) — but a
 // pre-deploy token signed under the old scheme may still carry one until it expires (<=12h).
 export type Role = 'supervisor' | 'md' | 'employee';
+// Every live role, as a runtime tuple. Use where an endpoint means "any authenticated
+// account" and then gates per-app inside the handler (see middleware.requireAnyAuth /
+// the Jupiter badges route). Mirrors LIVE_ROLES in middleware.ts; adding a future role
+// here keeps those "any account" paths from silently omitting it.
+export const ALL_ROLES = ['supervisor', 'md', 'employee'] as const;
 // Accepted at TOKEN VERIFICATION ONLY, so an old token isn't rejected outright mid-rollout;
 // every consumer re-reads the LIVE Agent row (see authedAgentFromToken), which decides real
 // access and can never itself be 'agent'/'messenger' post-boot.

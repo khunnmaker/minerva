@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Landmark, LogOut, Search, Download, Flag, FileText, Inbox, BarChart3, Scale,
-  Loader2, AlertTriangle, CheckCircle2, X, RefreshCw, ExternalLink, Ban, Printer,
+  Loader2, AlertTriangle, CheckCircle2, X, RefreshCw, ExternalLink, Ban, Crown, Printer,
   Undo2, ClipboardCheck, CheckCheck,
 } from 'lucide-react';
+
+// Portal-back link (Jupiter). URL from build-time env; the link is hidden when unset, so it
+// is completely inert until VITE_PORTAL_URL is configured (Phase 1 go-live / Phase 2 domains).
+const PORTAL_URL: string | undefined = import.meta.env.VITE_PORTAL_URL;
 import {
   getSummary, getPayments, setStatus, setFlag, verifyPayment, getReport, downloadCsv, baht,
   clearSession, getBankSummary,
@@ -64,6 +68,11 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
             <span className="text-slate-400 text-sm hidden sm:inline">· ระบบการเงิน</span>
           </div>
           <div className="flex items-center gap-3 text-sm">
+            {PORTAL_URL && (
+              <a href={PORTAL_URL} title="กลับพอร์ทัล Jupiter" className="flex items-center gap-1 text-slate-500 hover:text-violet-600">
+                <Crown size={15} /> <span className="hidden sm:inline">พอร์ทัล</span>
+              </a>
+            )}
             <span className="text-slate-500 hidden sm:inline">{agent.name}</span>
             <button onClick={() => { clearSession(); onLogout(); }} className="flex items-center gap-1 text-slate-500 hover:text-rose-600">
               <LogOut size={15} /> ออก

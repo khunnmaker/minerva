@@ -24,6 +24,19 @@ Mercury **retires the two manual purchase-order skills** and closes the buy→st
 
 Defaults accepted with the brief: cloud-Mercury = shared-suite co-tenant (routes in the shared api + `mercury/` frontend, per-grant auth like Venus); local-Mercury = standalone local app, own DB, talks only to cloud-Mercury + Gmail; alias→real-SKU link kept local-only (so even a Vulcan stock lookup can't unmask a secret item); PO attachment = PDF; grill-then-build (this doc).
 
+## 2b. Owner clarifications (2026-07-04) — READ BEFORE BUILDING
+
+Three clarifications landed after the brief was first written; they change the first architectural decision:
+
+- **Access = owner-only (for now).** The owner is the *only* Mercury user — there is no team using it. This removes the original justification for the **cloud team-portal + alias-blind layer** (those existed so the team could order without seeing factory secrets). **⇒ The build session's FIRST decision, confirm with the owner:**
+  - **Option A — single local app (simpler, likely right):** collapse to ONE local app that holds all secrets AND talks **directly to the shared Minerva api** for Vulcan low-stock + goods-receipt, and sends the PO email. No cloud-Mercury node, no alias layer needed while it's owner-only. Nothing procurement-related touches the cloud at all → strongest confidentiality, least to build/run. §3–§9's two-node machinery becomes optional.
+  - **Option B — keep the two-node design (§3–§9 as written):** only if the owner wants to open Mercury from his **phone / anywhere** (a secrets-free cloud front-end) or expects to add team members soon. The alias layer stays *optional* even then.
+  - Confidentiality (secrets never in the cloud) is satisfied by BOTH. Default to A unless the owner asks for anywhere-access.
+- **Supplier / vendor / alias / cost data is entered IN-APP** by the owner over time (not bulk-imported). ⇒ v1 needs **supplier + vendor + item CRUD screens**, not (only) an importer.
+- **Taiwan reference material** (the normal/special classification + product-picture folders the `/purchase-orders-taiwan` skill uses) will be **provided by the owner at build time**.
+
+The rest of this brief (§3 onward) documents the full two-node design. If Option A is chosen, read it as "everything the LOCAL node does, in one app; skip the cloud node + alias sections."
+
 ## 3. The alias / secret model (the core — get this right first)
 
 The alias is the **team-visible token**; the real identity is **local-only**. Everything else follows from this.

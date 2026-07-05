@@ -142,7 +142,8 @@ function ImportPanel({ onImported }: { onImported: () => void }) {
       const result = await applyBankImport(preview.token);
       setApplyResult(
         `นำเข้า ${result.source === 'kbiz' ? 'KBIZ' : 'K SHOP'}: ใหม่ ${result.counts.new} / ซ้ำ ${result.counts.dup} / ยกเว้น ${result.counts.excluded}` +
-        (result.autoMatched > 0 ? ` — จับคู่อัตโนมัติแล้ว ${result.autoMatched} รายการ` : ''),
+        (result.autoMatched > 0 ? ` — จับคู่อัตโนมัติแล้ว ${result.autoMatched} รายการ` : '') +
+        (result.autoCleared > 0 ? ` · เคลียร์เช็คอัตโนมัติ ${result.autoCleared} รายการ` : ''),
       );
       onImported();
       setPreview(null);

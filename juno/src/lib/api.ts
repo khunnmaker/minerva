@@ -355,6 +355,7 @@ export interface BankImportApplyResult {
   source: BankSource;
   counts: { parsed: number; new: number; dup: number; excluded: number };
   autoMatched: number;
+  autoCleared: number; // cheque payments auto-set settleState='cleared' by the cheque pass
 }
 
 export interface BankSuggestion {
@@ -405,7 +406,7 @@ export const applyBankImport = (token: string) =>
   });
 
 export const runBankAutomatch = () =>
-  authed<{ ok: boolean; autoMatched: number }>('/api/juno/bank/automatch', { method: 'POST' });
+  authed<{ ok: boolean; autoMatched: number; autoCleared: number }>('/api/juno/bank/automatch', { method: 'POST' });
 
 export interface BankTxnFilter {
   status?: BankTxnStatusFilter;

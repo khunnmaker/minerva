@@ -222,61 +222,137 @@ async function recomputePaymentReconciled(paymentId: string): Promise<void> {
   await prisma.payment.update({ where: { id: paymentId }, data: { reconciled: linkCount > 0 } });
 }
 
-// The auto-matcher (see spec B3): candidates are BankTxn direction='in'+unmatched ↔
-// Payment status='verified', not void, reconciled=false. Links ONLY when the pairing is
-// unambiguous in BOTH directions (exactly one candidate each way) — everything else is
-// left for the UI's ranked suggestions. Runs over a specific set of new txn ids (import
-// apply) or ALL unmatched in-txns (manual re-run via /bank/automatch). createdById is left
-// null on every link this function creates — a deliberate marker distinguishing "the system
-// auto-matched this" from a FIN-driven manual match (POST /match, which stamps req.agent.id).
-async function runAutoMatcher(txnIds?: string[]): Promise<number> {
+// A KBiz credit line is a cheque deposit when its Description is exactly "Cheque Deposit",
+// or its Details name a cheque number (some rows carry the number only in Details).
+function isChequeDeposit(t: { description: string; details: string }): boolean {
+  return t.description.trim() === 'Cheque Deposit' || /cheque no\.?/i.test(t.details);
+}
+// Pull the cheque number token out of a "… Cheque No. 0001234 …" Details string ('' if none).
+function extractChequeNo(t: { details: string }): string {
+  return t.details.match(/Cheque No\.?\s*(\S+)/i)?.[1] ?? '';
+}
+// Canonical cheque-number key: digits only, no leading zeros ('' if nothing survives) — so
+// "0001234", "1234", and "No.1234" all compare equal across the bank line and the payment.
+function normChq(s: string): string {
+  return s.replace(/\D/g, '').replace(/^0+/, '');
+}
+
+// The auto-matcher (see spec B3): runs in TWO passes over the in-scope unmatched "in" lines.
+//   Pass 1 (cheque): a KBiz "Cheque Deposit … Cheque No. N" line is matched to its hand-added
+//     cheque Payment by cheque number + amount, and that payment is auto-set settleState
+//     'cleared' (เคลียร์แล้ว) — the settling FIN used to do by hand.
+//   Pass 2 (generic): the amount + day-window match for every OTHER credit line ↔ Payment
+//     status='verified', not void, reconciled=false (cheque-deposit lines and source='cheque'
+//     payments are excluded here — a cheque can ONLY clear via its number, never by amount).
+// Both passes link ONLY when the pairing is unambiguous in BOTH directions (exactly one
+// candidate each way) — everything else is left for the UI's ranked suggestions. Runs over a
+// specific set of new txn ids (import apply) or ALL unmatched in-txns (manual re-run via
+// /bank/automatch). createdById is left null on every link this function creates — a
+// deliberate marker distinguishing "the system auto-matched this" from a FIN-driven manual
+// match (POST /match, which stamps req.agent.id). Returns both link counts.
+async function runAutoMatcher(txnIds?: string[]): Promise<{ matched: number; chequesCleared: number }> {
   // Ambiguity is judged against ALL unmatched in-lines, not just the ones this run may link:
   // an import-scoped run would otherwise miss that an OLDER unmatched line is an equally
   // plausible home for the payment, and link the new line with false confidence.
-  const [allTxns, payments] = await Promise.all([
+  const [allTxns, payments, chequePayments] = await Promise.all([
     prisma.bankTxn.findMany({
       where: { direction: 'in', matchStatus: 'unmatched' },
     }),
     prisma.payment.findMany({
-      where: { status: 'verified', reconciled: false },
+      where: { status: 'verified', reconciled: false, source: { not: 'cheque' } },
       select: { id: true, amount: true, transferAt: true, createdAt: true },
+    }),
+    prisma.payment.findMany({
+      where: { source: 'cheque', reconciled: false, status: { not: 'void' } },
+      select: { id: true, amount: true, chequeNo: true },
     }),
   ]);
   const linkTargets = txnIds ? new Set(txnIds) : null;
   const linkable = linkTargets ? allTxns.filter((t) => linkTargets.has(t.id)) : allTxns;
-  if (!linkable.length || !payments.length) return 0;
+  if (!linkable.length) return { matched: 0, chequesCleared: 0 };
 
-  const paymentTimes = new Map(payments.map((p) => [p.id, paymentTimestamp(p.transferAt, p.createdAt)]));
-
-  // candidates[txnId] = list of payment ids that pass the amount+day-window rule —
-  // computed over ALL unmatched lines so both ambiguity checks see the full picture.
-  const txnCandidates = new Map<string, string[]>();
-  const paymentCandidates = new Map<string, string[]>();
-  for (const t of allTxns) {
-    const matches: string[] = [];
-    for (const p of payments) {
-      if (!amountsEqual(t.amount, p.amount)) continue;
-      if (dayDistance(t.txnAt, paymentTimes.get(p.id)!) > 3) continue;
-      matches.push(p.id);
+  // ── Pass 1: cheques ──────────────────────────────────────────────────────
+  // Match cheque-deposit lines to cheque payments by cheque number + amount, unambiguous
+  // BOTH ways (exactly one candidate txn ↔ one candidate payment), computed over ALL
+  // unmatched cheque-deposit lines so an older line is seen as an equally plausible home.
+  // Linking auto-clears the payment (settleState 'cleared'). Track the linked txn ids so the
+  // generic pass skips them (its own filter also drops every cheque-deposit line regardless).
+  const chequeMatchedTxnIds = new Set<string>();
+  const chequeMatchedPaymentIds = new Set<string>();
+  let chequesCleared = 0;
+  if (chequePayments.length) {
+    const chequeTxnCandidates = new Map<string, string[]>();
+    const chequePaymentCandidates = new Map<string, string[]>();
+    for (const t of allTxns) {
+      if (!isChequeDeposit(t)) continue;
+      const key = normChq(extractChequeNo(t));
+      if (!key) continue; // no readable cheque number on the line → can't match by number
+      const matches: string[] = [];
+      for (const p of chequePayments) {
+        if (normChq(p.chequeNo) !== key) continue;
+        if (!amountsEqual(t.amount, p.amount)) continue;
+        matches.push(p.id);
+      }
+      chequeTxnCandidates.set(t.id, matches);
+      for (const pid of matches) chequePaymentCandidates.set(pid, [...(chequePaymentCandidates.get(pid) ?? []), t.id]);
     }
-    txnCandidates.set(t.id, matches);
-    for (const pid of matches) paymentCandidates.set(pid, [...(paymentCandidates.get(pid) ?? []), t.id]);
+
+    for (const t of linkable) {
+      const matches = chequeTxnCandidates.get(t.id) ?? [];
+      if (matches.length !== 1) continue; // ambiguous or no candidate on the txn side
+      const pid = matches[0];
+      if ((chequePaymentCandidates.get(pid) ?? []).length !== 1) continue; // ambiguous on the payment side too
+      await prisma.$transaction([
+        prisma.paymentBankMatch.create({ data: { paymentId: pid, bankTxnId: t.id, createdById: null } }),
+        prisma.bankTxn.update({ where: { id: t.id }, data: { matchStatus: 'matched' } }),
+        // the auto-clear: link + reconcile + settleState 'cleared' (เคลียร์แล้ว)
+        prisma.payment.update({ where: { id: pid }, data: { reconciled: true, settleState: 'cleared', settledAt: new Date(), settledById: null } }),
+      ]);
+      chequeMatchedTxnIds.add(t.id);
+      chequeMatchedPaymentIds.add(pid);
+      chequesCleared++;
+    }
   }
 
+  // ── Pass 2: generic amount + day-window ───────────────────────────────────
+  // Excludes cheque-deposit lines and anything the cheque pass already linked; the payment
+  // pool already excludes source='cheque' (a cheque must never amount-match a transfer line).
+  const genericTxns = allTxns.filter((t) => !isChequeDeposit(t) && !chequeMatchedTxnIds.has(t.id));
+  const genericLinkable = linkable.filter((t) => !isChequeDeposit(t) && !chequeMatchedTxnIds.has(t.id));
   let autoMatched = 0;
-  for (const t of linkable) {
-    const matches = txnCandidates.get(t.id) ?? [];
-    if (matches.length !== 1) continue; // ambiguous or no candidate on the txn side
-    const pid = matches[0];
-    if ((paymentCandidates.get(pid) ?? []).length !== 1) continue; // ambiguous on the payment side too
-    await prisma.$transaction([
-      prisma.paymentBankMatch.create({ data: { paymentId: pid, bankTxnId: t.id, createdById: null } }),
-      prisma.bankTxn.update({ where: { id: t.id }, data: { matchStatus: 'matched' } }),
-      prisma.payment.update({ where: { id: pid }, data: { reconciled: true } }),
-    ]);
-    autoMatched++;
+  if (genericLinkable.length && payments.length) {
+    const paymentTimes = new Map(payments.map((p) => [p.id, paymentTimestamp(p.transferAt, p.createdAt)]));
+
+    // candidates[txnId] = list of payment ids that pass the amount+day-window rule —
+    // computed over ALL unmatched lines so both ambiguity checks see the full picture.
+    const txnCandidates = new Map<string, string[]>();
+    const paymentCandidates = new Map<string, string[]>();
+    for (const t of genericTxns) {
+      const matches: string[] = [];
+      for (const p of payments) {
+        if (!amountsEqual(t.amount, p.amount)) continue;
+        if (dayDistance(t.txnAt, paymentTimes.get(p.id)!) > 3) continue;
+        matches.push(p.id);
+      }
+      txnCandidates.set(t.id, matches);
+      for (const pid of matches) paymentCandidates.set(pid, [...(paymentCandidates.get(pid) ?? []), t.id]);
+    }
+
+    for (const t of genericLinkable) {
+      const matches = txnCandidates.get(t.id) ?? [];
+      if (matches.length !== 1) continue; // ambiguous or no candidate on the txn side
+      const pid = matches[0];
+      if ((paymentCandidates.get(pid) ?? []).length !== 1) continue; // ambiguous on the payment side too
+      await prisma.$transaction([
+        prisma.paymentBankMatch.create({ data: { paymentId: pid, bankTxnId: t.id, createdById: null } }),
+        prisma.bankTxn.update({ where: { id: t.id }, data: { matchStatus: 'matched' } }),
+        prisma.payment.update({ where: { id: pid }, data: { reconciled: true } }),
+      ]);
+      autoMatched++;
+    }
   }
-  return autoMatched;
+
+  return { matched: autoMatched, chequesCleared };
 }
 
 export async function junoRoutes(app: FastifyInstance) {
@@ -767,22 +843,23 @@ export async function junoRoutes(app: FastifyInstance) {
       insertedIds.push(...created.filter((c) => c.direction === 'in').map((c) => c.id));
     }
 
-    const autoMatched = await runAutoMatcher(insertedIds);
+    const { matched, chequesCleared } = await runAutoMatcher(insertedIds);
 
     return {
       ok: true,
       importId: imp.id,
       source: staged.source,
       counts: { parsed: staged.parsed, new: newIdx.length, dup: staged.rows.length - newIdx.length, excluded: staged.excluded },
-      autoMatched,
+      autoMatched: matched,
+      autoCleared: chequesCleared,
     };
   });
 
   // POST /api/juno/bank/automatch — re-run the auto-matcher over ALL currently-unmatched
   // "in" bank txns (e.g. after FIN checks a backlog of payments post-import).
   app.post('/api/juno/bank/automatch', async () => {
-    const autoMatched = await runAutoMatcher();
-    return { ok: true, autoMatched };
+    const { matched, chequesCleared } = await runAutoMatcher();
+    return { ok: true, autoMatched: matched, autoCleared: chequesCleared };
   });
 
   // GET /api/juno/bank/txns?status=&dir=&from=&to=&q= — the เงินเข้า/เงินออก list, with

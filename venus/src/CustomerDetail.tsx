@@ -3,6 +3,7 @@ import {
   ArrowLeft, Loader2, AlertTriangle, MapPin, Phone, User, CreditCard, Truck, Hash,
   ShoppingCart, MessageCircle, Wallet, StickyNote, Clock, ChevronDown, ChevronUp,
   ShieldAlert, PackageSearch, TrendingUp, TrendingDown, Pin, Save, Sparkles,
+  Link2, Gift,
 } from 'lucide-react';
 import {
   getCustomer, saveNote, trendArrow, trendColor, formatBaht, formatDate,
@@ -230,6 +231,8 @@ function Overview({
   if (c.discount) rows.push({ icon: <Hash size={15} />, label: 'ส่วนลด', value: c.discount });
 
   const reorderCount = stats?.reorderDue?.length ?? 0;
+  const crossSellGapCount = stats?.crossSellGaps?.length ?? 0;
+  const bigTicketCount = stats?.bigTicket?.length ?? 0;
 
   return (
     <div className="space-y-4">
@@ -272,7 +275,18 @@ function Overview({
                 ยอดซื้อลดลง {Math.abs(stats.trendPct ?? 0).toFixed(0)}%
               </SignalBadge>
             )}
-            {reorderCount === 0 && stats.segment !== 'เสี่ยงหาย' && stats.trendDir !== 'down' && (
+            {bigTicketCount > 0 && (
+              <SignalBadge icon={<Gift size={13} />} tone="ok">
+                ครบกำหนดตรวจเช็คอุปกรณ์ {bigTicketCount} รายการ
+              </SignalBadge>
+            )}
+            {crossSellGapCount > 0 && (
+              <SignalBadge icon={<Link2 size={13} />} tone="rose">
+                สินค้าที่มักซื้อคู่กันแต่ยังไม่เคยซื้อ {crossSellGapCount} รายการ
+              </SignalBadge>
+            )}
+            {reorderCount === 0 && bigTicketCount === 0 && crossSellGapCount === 0
+              && stats.segment !== 'เสี่ยงหาย' && stats.trendDir !== 'down' && (
               <span className="text-xs text-slate-300">ไม่มีสัญญาณเด่นตอนนี้</span>
             )}
           </div>
@@ -282,6 +296,26 @@ function Overview({
                 <div key={r.sku} className="text-xs text-slate-600 flex items-center justify-between gap-2">
                   <span className="truncate">ถึงรอบสั่ง: {r.name || <span className="font-mono">{r.sku}</span>} {r.name && <span className="text-slate-300 font-mono">({r.sku})</span>}</span>
                   <span className="text-rose-600 font-medium whitespace-nowrap">เลยรอบ {r.dueSinceDays} วัน (ปกติทุก {r.medianGapDays} วัน)</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {bigTicketCount > 0 && stats.bigTicket && (
+            <div className="mt-3 pt-3 border-t border-slate-100 space-y-1">
+              {stats.bigTicket.map((b) => (
+                <div key={b.sku} className="text-xs text-slate-600 flex items-center justify-between gap-2">
+                  <span className="truncate">อุปกรณ์: {b.name || <span className="font-mono">{b.sku}</span>} {b.name && <span className="text-slate-300 font-mono">({b.sku})</span>}</span>
+                  <span className="text-emerald-600 font-medium whitespace-nowrap">ซื้อไปเมื่อ {b.monthsAgo.toFixed(0)} เดือนก่อน ({formatBaht(b.unitPrice)})</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {crossSellGapCount > 0 && stats.crossSellGaps && (
+            <div className="mt-3 pt-3 border-t border-slate-100 space-y-1">
+              {stats.crossSellGaps.map((g) => (
+                <div key={g.crossSku} className="text-xs text-slate-600 flex items-center justify-between gap-2">
+                  <span className="truncate">ยังไม่เคยซื้อ: {g.name || <span className="font-mono">{g.crossSku}</span>} {g.name && <span className="text-slate-300 font-mono">({g.crossSku})</span>}</span>
+                  <span className="text-rose-500 font-medium whitespace-nowrap">มักซื้อคู่กับ <span className="font-mono">{g.anchorSku}</span></span>
                 </div>
               ))}
             </div>

@@ -7,7 +7,7 @@
 // this repo for plain scripts).
 //
 //   npx tsx src/scripts/test-venus-stats.ts
-import { segmentFor, quintileScores } from '../venus/stats.js';
+import { segmentFor, quintileScores, bigTicketFor, crossSellGapsFor } from '../venus/stats.js';
 
 let failed = 0;
 function check(cond: boolean, label: string) {
@@ -79,6 +79,111 @@ check(segmentFor(4, 2, 3) === 'มาใหม่', 'segmentFor(4,2,3) === ม�
 // Loyal: the steady middle — everything that doesn't hit another rule.
 check(segmentFor(3, 3, 3) === 'ลูกค้าประจำ', 'segmentFor(3,3,3) === ลูกค้าประจำ');
 check(segmentFor(3, 5, 5) === 'ลูกค้าประจำ', 'segmentFor(3,5,5) === ลูกค้าประจำ (frequent+big but mid recency: not champion, not at-risk)');
+
+// ─── bigTicketFor (VENUS_BRIEF.md §6/§7 big-ticket anniversary) ───
+
+const NOW = new Date('2026-07-06T00:00:00Z');
+const THRESHOLD = 20000;
+const MIN_MONTHS = 6;
+
+// Bought once, above threshold, aged past the minimum -> signal.
+{
+  const purchaseDate = new Date('2025-10-01T00:00:00Z'); // ~9 months before NOW
+  const hit = bigTicketFor([purchaseDate], 45000, NOW, THRESHOLD, MIN_MONTHS);
+  check(hit !== null && hit.monthsAgo >= MIN_MONTHS, `bigTicketFor: one-off above-threshold purchase aged 9mo yields a signal (got ${JSON.stringify(hit)})`);
+}
+
+// Bought TWICE (even if above threshold) -> NOT a one-off -> no signal (it's a real reorder
+// cycle candidate instead, handled by the reorder-cycle path, not this one).
+{
+  const hit = bigTicketFor(
+    [new Date('2025-01-01T00:00:00Z'), new Date('2025-10-01T00:00:00Z')],
+    45000,
+    NOW,
+    THRESHOLD,
+    MIN_MONTHS,
+  );
+  check(hit === null, `bigTicketFor: bought twice yields NO signal even above threshold (got ${JSON.stringify(hit)})`);
+}
+
+// Bought once, but BELOW threshold -> not "big-ticket" -> no signal.
+{
+  const hit = bigTicketFor([new Date('2025-10-01T00:00:00Z')], 5000, NOW, THRESHOLD, MIN_MONTHS);
+  check(hit === null, `bigTicketFor: below-threshold one-off purchase yields NO signal (got ${JSON.stringify(hit)})`);
+}
+
+// Bought once, above threshold, but TOO RECENT (< minMonths ago) -> no signal yet.
+{
+  const purchaseDate = new Date('2026-06-01T00:00:00Z'); // ~1 month before NOW
+  const hit = bigTicketFor([purchaseDate], 45000, NOW, THRESHOLD, MIN_MONTHS);
+  check(hit === null, `bigTicketFor: too-recent one-off purchase yields NO signal (got ${JSON.stringify(hit)})`);
+}
+
+// Boundary: exactly at minMonths (allowing float precision) should qualify.
+{
+  const purchaseDate = new Date(NOW.getTime() - MIN_MONTHS * 30.4375 * 86400000 - 86400000); // 1 day past boundary
+  const hit = bigTicketFor([purchaseDate], 45000, NOW, THRESHOLD, MIN_MONTHS);
+  check(hit !== null, `bigTicketFor: just past the minMonths boundary yields a signal (got ${JSON.stringify(hit)})`);
+}
+
+// ─── crossSellGapsFor (VENUS_BRIEF.md §7 cross-sell gap) ───
+
+// Owns the anchor, has a positive-score link to an un-owned crossSku -> gap.
+{
+  const owned = new Set(['A1']);
+  const links = [{ anchorSku: 'A1', crossSku: 'B1', score: 3 }];
+  const gaps = crossSellGapsFor(owned, links);
+  check(gaps.length === 1 && gaps[0].crossSku === 'B1', `crossSellGapsFor: owns anchor + un-owned scored cross -> 1 gap (got ${JSON.stringify(gaps)})`);
+}
+
+// Owns BOTH anchor and crossSku -> no gap (already has it, nothing to suggest).
+{
+  const owned = new Set(['A1', 'B1']);
+  const links = [{ anchorSku: 'A1', crossSku: 'B1', score: 3 }];
+  const gaps = crossSellGapsFor(owned, links);
+  check(gaps.length === 0, `crossSellGapsFor: owns both anchor and cross -> NO gap (got ${JSON.stringify(gaps)})`);
+}
+
+// Does not own the anchor at all -> link is irrelevant -> no gap.
+{
+  const owned = new Set(['Z9']);
+  const links = [{ anchorSku: 'A1', crossSku: 'B1', score: 3 }];
+  const gaps = crossSellGapsFor(owned, links);
+  check(gaps.length === 0, `crossSellGapsFor: does not own the anchor -> NO gap (got ${JSON.stringify(gaps)})`);
+}
+
+// Non-positive score (demoted/unlearned pairing) -> excluded even if otherwise a gap.
+{
+  const owned = new Set(['A1']);
+  const links = [{ anchorSku: 'A1', crossSku: 'B1', score: 0 }, { anchorSku: 'A1', crossSku: 'B2', score: -3 }];
+  const gaps = crossSellGapsFor(owned, links);
+  check(gaps.length === 0, `crossSellGapsFor: score<=0 links excluded (got ${JSON.stringify(gaps)})`);
+}
+
+// Empty links (no CrossSellLink rows at all, e.g. venus_test) -> cleanly empty, no throw.
+{
+  const gaps = crossSellGapsFor(new Set(['A1']), []);
+  check(gaps.length === 0, 'crossSellGapsFor: empty links array yields empty gaps (no throw)');
+}
+
+// Same crossSku reachable via two owned anchors -> de-duped, keeps the higher score.
+{
+  const owned = new Set(['A1', 'A2']);
+  const links = [
+    { anchorSku: 'A1', crossSku: 'B1', score: 2 },
+    { anchorSku: 'A2', crossSku: 'B1', score: 5 },
+  ];
+  const gaps = crossSellGapsFor(owned, links);
+  check(gaps.length === 1 && gaps[0].score === 5 && gaps[0].anchorSku === 'A2', `crossSellGapsFor: de-dupes by crossSku, keeps highest score (got ${JSON.stringify(gaps)})`);
+}
+
+// Cap respected: more qualifying gaps than the limit -> truncated to the limit, highest-score first.
+{
+  const owned = new Set(['A1']);
+  const links = Array.from({ length: 10 }, (_, i) => ({ anchorSku: 'A1', crossSku: `B${i}`, score: i + 1 }));
+  const gaps = crossSellGapsFor(owned, links, 3);
+  check(gaps.length === 3 && gaps[0].score === 10, `crossSellGapsFor: capped to limit, sorted score desc (got ${JSON.stringify(gaps)})`);
+}
 
 if (failed > 0) {
   console.error(`\n${failed} check(s) FAILED`);

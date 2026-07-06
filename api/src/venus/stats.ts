@@ -25,6 +25,15 @@ export const REORDER_MIN_PURCHASES = Number(process.env.VENUS_REORDER_MIN_PURCHA
 // treated as a one-off big-ticket purchase (excluded from reorder cycles) rather than a
 // consumable that just hasn't repeated yet. Brief: "configurable threshold, e.g. 20000".
 export const EQUIPMENT_PRICE_THRESHOLD = Number(process.env.VENUS_EQUIPMENT_PRICE_THRESHOLD ?? 20000);
+// Big-ticket anniversary: how many months must have passed since the one-off equipment
+// purchase before it's worth a service/upgrade nudge (too-recent purchases aren't due for
+// anything yet). Same items as the reorder-cycle EQUIPMENT_PRICE_THRESHOLD exclusion —
+// this just adds a positive signal once they've aged (VENUS_BRIEF.md §7).
+export const BIGTICKET_MIN_MONTHS = Number(process.env.VENUS_BIGTICKET_MIN_MONTHS ?? 6);
+// Cross-sell gap cap: how many gap suggestions to keep per customer (ranked by score desc) —
+// a well-connected anchor SKU could have many linked crossSkus; keep the row small and only
+// the most-confident few (mirrors MAX_REORDER items pattern in cards.ts).
+export const CROSSSELL_GAP_LIMIT = Number(process.env.VENUS_CROSSSELL_GAP_LIMIT ?? 5);
 
 // ─── Thai segment mapping (explicit rule, see brief §6) ───
 //
@@ -86,6 +95,63 @@ function daysBetween(a: Date, b: Date): number {
   return Math.round((a.getTime() - b.getTime()) / 86400000);
 }
 
+function monthsBetween(a: Date, b: Date): number {
+  return daysBetween(a, b) / 30.4375; // average month length, matches "monthsAgo" framing (not calendar months)
+}
+
+// Pure detector for the big-ticket anniversary signal (VENUS_BRIEF.md §6/§7): given ONE
+// SKU's full purchase history + its max unit price, decide whether it's a one-off big-ticket
+// item aged enough to be worth a service/upgrade nudge. Same equipment definition used to
+// EXCLUDE these SKUs from reorder cycles (bought exactly once, above the price threshold) —
+// this is the positive counterpart. Exported standalone (no DB) so it's directly unit-testable.
+export function bigTicketFor(
+  dates: Date[],
+  maxUnitPrice: number,
+  now: Date,
+  priceThreshold: number = EQUIPMENT_PRICE_THRESHOLD,
+  minMonths: number = BIGTICKET_MIN_MONTHS,
+): { lastPurchase: Date; monthsAgo: number } | null {
+  if (dates.length !== 1) return null; // bought twice+ -> a real reorder cycle, not one-off equipment
+  if (!(maxUnitPrice > priceThreshold)) return null; // below threshold -> not "big-ticket"
+  const lastPurchase = dates[0];
+  const monthsAgo = monthsBetween(now, lastPurchase);
+  if (monthsAgo < minMonths) return null; // too recent to nudge yet
+  return { lastPurchase, monthsAgo };
+}
+
+// Pure picker for cross-sell gaps (VENUS_BRIEF.md §7): given the SKUs a customer already
+// owns and the full set of CrossSellLink rows (anchorSku -> crossSku, score), return the
+// scored links whose anchor the customer owns AND whose crossSku they do NOT own — ranked by
+// score desc, capped. Positive-score links only (score<=0 pairings are demoted/unlearned
+// pairings per crossSell.ts's DEMOTE_AT convention, not something worth suggesting). Exported
+// standalone (no DB, no Product lookup) so the ranking/ownership logic is directly
+// unit-testable; name resolution happens separately where the Product catalog is available.
+export interface CrossSellLinkRow {
+  anchorSku: string;
+  crossSku: string;
+  score: number;
+}
+export function crossSellGapsFor(
+  ownedSkus: Set<string>,
+  links: CrossSellLinkRow[],
+  limit: number = CROSSSELL_GAP_LIMIT,
+): { crossSku: string; anchorSku: string; score: number }[] {
+  const gaps = links
+    .filter((l) => l.score > 0 && ownedSkus.has(l.anchorSku) && !ownedSkus.has(l.crossSku))
+    .sort((a, b) => b.score - a.score);
+  // De-dupe by crossSku (a customer can own multiple anchors linked to the same gap) — keep
+  // the highest-scoring anchor pairing per gap.
+  const seen = new Set<string>();
+  const out: { crossSku: string; anchorSku: string; score: number }[] = [];
+  for (const g of gaps) {
+    if (seen.has(g.crossSku)) continue;
+    seen.add(g.crossSku);
+    out.push({ crossSku: g.crossSku, anchorSku: g.anchorSku, score: g.score });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 function parseMoney(s: string | null | undefined): number {
   if (!s) return 0;
   const n = parseFloat(String(s).replace(/,/g, ''));
@@ -99,6 +165,26 @@ export interface ReorderDueItem {
   medianGapDays: number;
   dueSinceDays: number; // how many days past the due point (today - (lastPurchase + multiplier*median))
   purchaseCount: number;
+}
+
+// Cross-sell gap (VENUS_BRIEF.md §7): a CrossSellLink pairing where the customer owns the
+// anchorSku but has never bought the crossSku, ranked by score desc.
+export interface CrossSellGapItem {
+  crossSku: string;
+  name: string | null; // Product.nameTh/nameEn, or null if not in the catalog
+  anchorSku: string; // the SKU the customer already owns that this gap was learned from
+  score: number;
+}
+
+// Big-ticket anniversary (VENUS_BRIEF.md §6/§7): a one-off equipment SKU (bought exactly
+// once, above EQUIPMENT_PRICE_THRESHOLD) aged past BIGTICKET_MIN_MONTHS — worth a
+// service/upgrade nudge.
+export interface BigTicketItem {
+  sku: string;
+  name: string | null;
+  unitPrice: number;
+  monthsAgo: number;
+  lastPurchase: string; // ISO date
 }
 
 export interface RecomputeStatsOptions {
@@ -215,6 +301,25 @@ export async function recomputeStats(
     }
   }
 
+  // Cross-sell links: fetched ONCE upfront (not per-customer) — CrossSellLink is a small
+  // shared table (learned bought-together pairs across the whole catalog), never filtered by
+  // customer, so a single findMany here is far cheaper than a query per customer in the loop
+  // below. Empty in environments with no learned pairings yet (VENUS_BRIEF.md §7: "if
+  // CrossSellLink is empty/no gaps -> empty list, no signal") — crossSellGapsFor handles an
+  // empty `links` array cleanly (returns []), no special-casing needed here.
+  const crossSellLinks: CrossSellLinkRow[] = await prisma.crossSellLink.findMany({
+    where: { score: { gt: 0 } },
+    select: { anchorSku: true, crossSku: true, score: true },
+  });
+  const crossSkuNeeded = new Set(crossSellLinks.map((l) => l.crossSku));
+  const crossSellProducts = crossSkuNeeded.size
+    ? await prisma.product.findMany({
+        where: { sku: { in: Array.from(crossSkuNeeded) } },
+        select: { sku: true, nameTh: true, nameEn: true },
+      })
+    : [];
+  const crossSellNameBySku = new Map(crossSellProducts.map((p) => [p.sku, p.nameTh || p.nameEn || null]));
+
   const codes = Array.from(byCustomer.keys());
   const rValues: number[] = []; // days since last purchase (smaller = better -> inverted)
   const fValues: number[] = [];
@@ -289,6 +394,32 @@ export async function recomputeStats(
     }
     reorderDue.sort((x, y) => y.dueSinceDays - x.dueSinceDays);
 
+    // Big-ticket anniversary: reuse the SAME per-SKU aggregation as the reorder-cycle
+    // exclusion above (skuDates/skuMaxUnitPrice) — same items, positive signal instead.
+    const bigTicket: BigTicketItem[] = [];
+    for (const [sku, dates] of a.skuDates) {
+      const maxUnitPrice = a.skuMaxUnitPrice.get(sku) ?? 0;
+      const hit = bigTicketFor(dates, maxUnitPrice, now);
+      if (!hit) continue;
+      bigTicket.push({
+        sku,
+        name: a.skuName.get(sku) ?? null,
+        unitPrice: maxUnitPrice,
+        monthsAgo: Math.round(hit.monthsAgo * 10) / 10,
+        lastPurchase: hit.lastPurchase.toISOString(),
+      });
+    }
+    bigTicket.sort((x, y) => y.monthsAgo - x.monthsAgo);
+
+    // Cross-sell gaps: anchors = every SKU this customer has ever bought (in the RFM window).
+    const ownedSkus = new Set(a.skuDates.keys());
+    const crossSellGaps: CrossSellGapItem[] = crossSellGapsFor(ownedSkus, crossSellLinks).map((g) => ({
+      crossSku: g.crossSku,
+      name: crossSellNameBySku.get(g.crossSku) ?? null,
+      anchorSku: g.anchorSku,
+      score: g.score,
+    }));
+
     await prisma.customerStats.upsert({
       where: { customerCode: code },
       create: {
@@ -302,6 +433,8 @@ export async function recomputeStats(
         trendDir,
         trendOrders,
         reorderDue: reorderDue.length ? (reorderDue as unknown as object) : undefined,
+        crossSellGaps: crossSellGaps.length ? (crossSellGaps as unknown as object) : undefined,
+        bigTicket: bigTicket.length ? (bigTicket as unknown as object) : undefined,
         dataFrom: coverage._min.date,
         dataTo: coverage._max.date,
       },
@@ -315,6 +448,8 @@ export async function recomputeStats(
         trendDir,
         trendOrders,
         reorderDue: reorderDue.length ? (reorderDue as unknown as object) : Prisma.JsonNull,
+        crossSellGaps: crossSellGaps.length ? (crossSellGaps as unknown as object) : Prisma.JsonNull,
+        bigTicket: bigTicket.length ? (bigTicket as unknown as object) : Prisma.JsonNull,
         dataFrom: coverage._min.date,
         dataTo: coverage._max.date,
         computedAt: now,

@@ -62,6 +62,23 @@ export interface ReorderDueItem {
   dueSinceDays: number;
   purchaseCount: number;
 }
+// Cross-sell gap (VENUS_BRIEF.md §7): a learned bought-together pairing (CrossSellLink) the
+// customer owns the anchor for but has never bought the paired crossSku.
+export interface CrossSellGapItem {
+  crossSku: string;
+  name: string | null;
+  anchorSku: string;
+  score: number;
+}
+// Big-ticket anniversary (VENUS_BRIEF.md §6/§7): a one-off equipment purchase aged enough to
+// be worth a service/upgrade-timing nudge.
+export interface BigTicketItem {
+  sku: string;
+  name: string | null;
+  unitPrice: number;
+  monthsAgo: number;
+  lastPurchase: string;
+}
 export interface CustomerStats {
   customerCode: string;
   r: number | null;
@@ -73,6 +90,8 @@ export interface CustomerStats {
   trendDir: 'up' | 'down' | 'flat' | null;
   trendOrders: number | null;
   reorderDue: ReorderDueItem[] | null;
+  crossSellGaps: CrossSellGapItem[] | null;
+  bigTicket: BigTicketItem[] | null;
   dataFrom: string | null;
   dataTo: string | null;
   computedAt: string;

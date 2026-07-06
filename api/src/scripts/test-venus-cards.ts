@@ -30,7 +30,10 @@ function check(cond: boolean, label: string) {
   }
 }
 
-type StatsShape = Pick<CustomerStats, 'segment' | 'r' | 'f' | 'trendDir' | 'trendPct' | 'reorderDue'>;
+type StatsShape = Pick<
+  CustomerStats,
+  'segment' | 'r' | 'f' | 'trendDir' | 'trendPct' | 'reorderDue' | 'crossSellGaps' | 'bigTicket'
+>;
 
 // ─── activeSignals() ───
 
@@ -45,6 +48,8 @@ type StatsShape = Pick<CustomerStats, 'segment' | 'r' | 'f' | 'trendDir' | 'tren
     reorderDue: [
       { sku: '01-05-01', name: 'NATURAL ABRASIVE 10KG', dueSinceDays: 68, medianGapDays: 4, lastPurchase: '2026-04-24', purchaseCount: 6 },
     ] as unknown as object,
+    crossSellGaps: null,
+    bigTicket: null,
   };
   const signals = activeSignals(stats);
   check(signals.length === 2, `activeSignals: reorder+trend row yields 2 signals (got ${signals.length})`);
@@ -55,7 +60,7 @@ type StatsShape = Pick<CustomerStats, 'segment' | 'r' | 'f' | 'trendDir' | 'tren
 // เสี่ยงหาย segment alone (no reorder, no trend) should still surface a segment signal.
 {
   const stats: StatsShape = {
-    segment: 'เสี่ยงหาย', r: 120, f: 25, trendDir: 'flat', trendPct: 0, reorderDue: null,
+    segment: 'เสี่ยงหาย', r: 120, f: 25, trendDir: 'flat', trendPct: 0, reorderDue: null, crossSellGaps: null, bigTicket: null,
   };
   const signals = activeSignals(stats);
   check(signals.length === 1 && signals[0].kind === 'segment', `activeSignals: เสี่ยงหาย alone yields 1 segment signal (got ${JSON.stringify(signals)})`);
@@ -64,7 +69,7 @@ type StatsShape = Pick<CustomerStats, 'segment' | 'r' | 'f' | 'trendDir' | 'tren
 // A quiet customer (no reorder, small/no trend, ordinary segment) -> NO signals -> no card.
 {
   const stats: StatsShape = {
-    segment: 'ลูกค้าประจำ', r: 15, f: 8, trendDir: 'flat', trendPct: 2, reorderDue: null,
+    segment: 'ลูกค้าประจำ', r: 15, f: 8, trendDir: 'flat', trendPct: 2, reorderDue: null, crossSellGaps: null, bigTicket: null,
   };
   const signals = activeSignals(stats);
   check(signals.length === 0, `activeSignals: quiet customer yields 0 signals (got ${signals.length})`);
@@ -73,7 +78,7 @@ type StatsShape = Pick<CustomerStats, 'segment' | 'r' | 'f' | 'trendDir' | 'tren
 // Trend below the meaningful threshold (<=20%) must NOT surface, even if directionally up.
 {
   const stats: StatsShape = {
-    segment: 'ลูกค้าประจำ', r: 15, f: 8, trendDir: 'up', trendPct: 12, reorderDue: null,
+    segment: 'ลูกค้าประจำ', r: 15, f: 8, trendDir: 'up', trendPct: 12, reorderDue: null, crossSellGaps: null, bigTicket: null,
   };
   const signals = activeSignals(stats);
   check(signals.length === 0, `activeSignals: sub-threshold trend (12%) yields 0 signals (got ${signals.length})`);
@@ -88,7 +93,10 @@ check(activeSignals(null).length === 0, 'activeSignals(null) returns empty array
   const many = Array.from({ length: 10 }, (_, i) => ({
     sku: `SKU-${i}`, name: `Product ${i}`, dueSinceDays: i * 5, medianGapDays: 10, lastPurchase: '2026-01-01', purchaseCount: 4,
   }));
-  const stats: StatsShape = { segment: 'ลูกค้าประจำ', r: 10, f: 8, trendDir: 'flat', trendPct: 0, reorderDue: many as unknown as object };
+  const stats: StatsShape = {
+    segment: 'ลูกค้าประจำ', r: 10, f: 8, trendDir: 'flat', trendPct: 0,
+    reorderDue: many as unknown as object, crossSellGaps: null, bigTicket: null,
+  };
   const signals = activeSignals(stats);
   const reorderSignals = signals.filter((s) => s.kind === 'reorder_due');
   check(reorderSignals.length === 5, `activeSignals: reorder items capped at 5 (got ${reorderSignals.length})`);
@@ -116,6 +124,8 @@ async function testBuildCardAndStore() {
     reorderDue: [
       { sku: '01-05-01', name: 'NATURAL ABRASIVE 10KG', dueSinceDays: 68, medianGapDays: 4, lastPurchase: '2026-04-24', purchaseCount: 6 },
     ] as unknown as object,
+    crossSellGaps: null,
+    bigTicket: null,
   };
 
   const built = await buildCard(stats, 'claude-sonnet-4-6-test', mockCaller);
@@ -128,7 +138,10 @@ async function testBuildCardAndStore() {
   check(!capturedSystem.includes('NATURAL ABRASIVE'), 'buildCard: system turn stays free of customer-specific data (data boundary)');
 
   // buildCard() with NO signals must return null without calling the LLM at all.
-  const quietStats: StatsShape = { segment: 'ลูกค้าประจำ', r: 15, f: 8, trendDir: 'flat', trendPct: 0, reorderDue: null };
+  const quietStats: StatsShape = {
+    segment: 'ลูกค้าประจำ', r: 15, f: 8, trendDir: 'flat', trendPct: 0,
+    reorderDue: null, crossSellGaps: null, bigTicket: null,
+  };
   let mockCalledForQuiet = false;
   const built2 = await buildCard(quietStats, 'claude-sonnet-4-6-test', async () => {
     mockCalledForQuiet = true;

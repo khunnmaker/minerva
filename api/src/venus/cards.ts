@@ -1,7 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import { callClaude, llmAvailable } from '../llm/anthropic.js';
 import type { CustomerStats } from '@prisma/client';
-import type { ReorderDueItem } from './stats.js';
+import type { ReorderDueItem, CrossSellGapItem, BigTicketItem } from './stats.js';
 
 // Venus AI suggestion cards (VENUS_BRIEF.md §7). This is the weekly narration LAYER on top
 // of the already-computed, deterministic signals in CustomerStats (stats.ts) — it never
@@ -26,7 +26,13 @@ const MAX_REORDER_ITEMS_IN_SIGNAL = 5;
 // card and the rules badges never disagree about what counts as "worth a mention".
 const TREND_PCT_THRESHOLD = 20;
 
-export type SignalKind = 'reorder_due' | 'trend' | 'segment';
+// Same reasoning as MAX_REORDER_ITEMS_IN_SIGNAL above, applied to the two newer signal kinds
+// (VENUS_BRIEF.md §7) — cap what's fed to the LLM to a highlight, not the full list (the full
+// crossSellGaps/bigTicket arrays still live on CustomerStats for the customer card UI).
+const MAX_CROSSSELL_GAPS_IN_SIGNAL = 3;
+const MAX_BIGTICKET_IN_SIGNAL = 3;
+
+export type SignalKind = 'reorder_due' | 'trend' | 'segment' | 'cross_sell_gap' | 'big_ticket_anniversary';
 
 export interface ReorderSignal {
   kind: 'reorder_due';
@@ -47,12 +53,26 @@ export interface SegmentSignal {
   // (real computed numbers only — r/f, never invented).
   evidence: string;
 }
-// Extension point for later enrichment (VENUS_BRIEF.md §7): cross-sell-gap signals (Minerva's
-// bought-together pairs the customer lacks) and big-ticket-anniversary signals (equipment
-// service/upgrade timing) both belong in this union once built. Add a new `kind` + interface
-// above, extend the union, and push instances of it in activeSignals() below — nothing else
-// in the generator or the storage/endpoint layer needs to change (both are signal-shape-agnostic).
-export type Signal = ReorderSignal | TrendSignal | SegmentSignal;
+// Cross-sell gap (VENUS_BRIEF.md §7): a learned bought-together pairing (CrossSellLink) the
+// customer owns the anchor for but has never bought the paired crossSku.
+export interface CrossSellGapSignal {
+  kind: 'cross_sell_gap';
+  crossSku: string;
+  name: string | null;
+  anchorSku: string;
+  score: number;
+}
+// Big-ticket anniversary (VENUS_BRIEF.md §6/§7): a one-off equipment purchase aged past the
+// minimum-months threshold — worth a service/upgrade-timing nudge.
+export interface BigTicketSignal {
+  kind: 'big_ticket_anniversary';
+  sku: string;
+  name: string | null;
+  unitPrice: number;
+  monthsAgo: number;
+  lastPurchase: string;
+}
+export type Signal = ReorderSignal | TrendSignal | SegmentSignal | CrossSellGapSignal | BigTicketSignal;
 
 // A segment worth flagging to a rep on its own (VENUS_BRIEF.md §7: "segment transitions worth
 // mentioning") — เสี่ยงหาย is the one that needs a human to notice and act; the churn precaution
@@ -72,7 +92,10 @@ function segmentSignal(stats: Pick<CustomerStats, 'segment' | 'r' | 'f'>): Segme
 // the row. A customer with an empty list gets no card (see cards should only be generated for
 // customers with >=1 active signal, VENUS_BRIEF.md §7).
 export function activeSignals(
-  stats: Pick<CustomerStats, 'segment' | 'r' | 'f' | 'trendDir' | 'trendPct' | 'reorderDue'> | null,
+  stats: Pick<
+    CustomerStats,
+    'segment' | 'r' | 'f' | 'trendDir' | 'trendPct' | 'reorderDue' | 'crossSellGaps' | 'bigTicket'
+  > | null,
 ): Signal[] {
   if (!stats) return [];
   const signals: Signal[] = [];
@@ -99,6 +122,25 @@ export function activeSignals(
 
   const seg = segmentSignal(stats);
   if (seg) signals.push(seg);
+
+  const gapItems = Array.isArray(stats.crossSellGaps) ? (stats.crossSellGaps as unknown as CrossSellGapItem[]) : [];
+  const topGaps = [...gapItems].sort((a, b) => b.score - a.score).slice(0, MAX_CROSSSELL_GAPS_IN_SIGNAL);
+  for (const g of topGaps) {
+    signals.push({ kind: 'cross_sell_gap', crossSku: g.crossSku, name: g.name, anchorSku: g.anchorSku, score: g.score });
+  }
+
+  const bigTicketItems = Array.isArray(stats.bigTicket) ? (stats.bigTicket as unknown as BigTicketItem[]) : [];
+  const topBigTicket = [...bigTicketItems].sort((a, b) => b.monthsAgo - a.monthsAgo).slice(0, MAX_BIGTICKET_IN_SIGNAL);
+  for (const b of topBigTicket) {
+    signals.push({
+      kind: 'big_ticket_anniversary',
+      sku: b.sku,
+      name: b.name,
+      unitPrice: b.unitPrice,
+      monthsAgo: b.monthsAgo,
+      lastPurchase: b.lastPurchase,
+    });
+  }
 
   return signals;
 }
@@ -152,6 +194,10 @@ function formatSignalForPrompt(s: Signal): string {
         : `ยอดซื้อ 90 วันล่าสุดลดลง ${Math.abs(s.pct).toFixed(0)}% เทียบกับ 90 วันก่อนหน้า`;
     case 'segment':
       return `กลุ่มลูกค้า: ${s.segment} — ${s.evidence}`;
+    case 'cross_sell_gap':
+      return `ลูกค้าซื้อ ${s.anchorSku} แต่ยังไม่เคยซื้อ ${s.name ?? s.crossSku} ที่มักซื้อคู่กัน`;
+    case 'big_ticket_anniversary':
+      return `ซื้อ ${s.name ?? s.sku} ไปเมื่อ ${s.monthsAgo.toFixed(0)} เดือนก่อน — อาจถึงเวลาตรวจเช็ค/เสนอรุ่นใหม่`;
   }
 }
 
@@ -179,7 +225,10 @@ export interface CardBuildResult {
 // try/catch-around-callClaude shape. This function itself does not catch — it's a thin,
 // testable prompt-build + call + shape step; callers decide fail-soft behavior.
 export async function buildCard(
-  stats: Pick<CustomerStats, 'segment' | 'r' | 'f' | 'trendDir' | 'trendPct' | 'reorderDue'>,
+  stats: Pick<
+    CustomerStats,
+    'segment' | 'r' | 'f' | 'trendDir' | 'trendPct' | 'reorderDue' | 'crossSellGaps' | 'bigTicket'
+  >,
   modelId: string,
   caller: (user: string, system: string) => Promise<string> = (user, system) => callClaude(user, system),
 ): Promise<CardBuildResult | null> {
@@ -221,7 +270,17 @@ export async function generateAllCards(
   const result: GenerateAllResult = { candidates: 0, written: 0, skippedNoLlm: 0, skippedError: 0 };
 
   const allStats = await prisma.customerStats.findMany({
-    select: { customerCode: true, segment: true, r: true, f: true, trendDir: true, trendPct: true, reorderDue: true },
+    select: {
+      customerCode: true,
+      segment: true,
+      r: true,
+      f: true,
+      trendDir: true,
+      trendPct: true,
+      reorderDue: true,
+      crossSellGaps: true,
+      bigTicket: true,
+    },
   });
 
   const candidates = allStats.filter((s) => activeSignals(s).length > 0);

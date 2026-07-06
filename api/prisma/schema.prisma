@@ -808,6 +808,19 @@ model CustomerStats {
   // same as the rest of this row, and queried only per-customer (never filtered across
   // customers), so a relation table would add join cost with no query benefit yet.
   reorderDue   Json?
+  // Cross-sell gap signals (VENUS_BRIEF.md §7): JSON array of { crossSku, name, anchorSku,
+  // score } — CrossSellLink pairings (learned bought-together, Minerva's picker) where the
+  // customer owns the anchorSku but has never bought the crossSku, ranked by score desc.
+  // Empty/absent when CrossSellLink has no rows yet or the customer has no gaps — additive,
+  // see migration 20260710000000_venus_signals.
+  crossSellGaps Json?
+  // Big-ticket anniversary signals (VENUS_BRIEF.md §6/§7): JSON array of { sku, name,
+  // unitPrice, monthsAgo, lastPurchase } — the SAME one-off-equipment definition used to
+  // EXCLUDE these SKUs from reorder cycles (bought exactly once, unit price >
+  // EQUIPMENT_PRICE_THRESHOLD), surfaced instead as a positive service/upgrade-timing nudge
+  // once aged past VENUS_BIGTICKET_MIN_MONTHS. Additive, see migration
+  // 20260710000000_venus_signals.
+  bigTicket    Json?
   dataFrom     DateTime? // data-coverage window this row was computed over (min sale date)
   dataTo       DateTime? // data-coverage window this row was computed over (max sale date)
   computedAt   DateTime  @default(now())

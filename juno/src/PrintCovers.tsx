@@ -78,54 +78,43 @@ export default function PrintCovers({ payments, onDone }: { payments: Payment[];
 
 function Cover({ payment: p }: { payment: Payment }) {
   const multi = p.reNumbers.length > 1;
-  // one RE → large; a few → medium; many → small & wrapped, so a receipt paying several
+  // one RE → large; a few → medium; many → smaller & wrapped, so a receipt paying several
   // RE numbers can never blow the numbers out of the A6 page.
-  const reSize = p.reNumbers.length === 1 ? 'text-2xl' : p.reNumbers.length <= 3 ? 'text-lg' : 'text-sm';
+  const reSize = p.reNumbers.length === 1 ? 'text-4xl' : p.reNumbers.length <= 3 ? 'text-2xl' : 'text-lg';
   return (
     <div className="print-page shadow-lg">
-      <div className="text-[9px] font-bold text-slate-500 mb-2">{COMPANY_HEADER}</div>
+      <div className="text-sm font-bold text-slate-500 mb-3">{COMPANY_HEADER}</div>
 
-      <div className="mb-2">
-        <div className="text-[8px] text-slate-400">เลขที่ใบเสร็จ{multi ? ` (${p.reNumbers.length} เลข)` : ''}</div>
-        <div className={`${reSize} font-bold tracking-wide leading-tight flex flex-wrap gap-x-2`}>
+      <div className="mb-3">
+        <div className="text-xs text-slate-400">เลขที่ใบเสร็จ{multi ? ` (${p.reNumbers.length} เลข)` : ''}</div>
+        <div className={`${reSize} font-bold tracking-wide leading-tight flex flex-wrap gap-x-3`}>
           {p.reNumbers.map((re) => <span key={re}>RE {re}</span>)}
         </div>
       </div>
 
       <Row label="วันที่" value={fmtDate(p.createdAt)} />
-      <Row label="ลูกค้า" value={<>{clamp(p.customerName)} {p.customerCode && <span className="text-slate-400">รหัส {p.customerCode}</span>}</>} />
-      <Row label="ชื่อบนใบเสร็จ" value={clamp(p.receiptName)} />
+      {/* ลูกค้า + ชื่อบนใบเสร็จ each render on ONE line (owner 2026-07-06): the customer name sits
+          inline with its label exactly like ชื่อบนใบเสร็จ; the รหัส code is a subtle suffix that
+          ellipsizes last if the row runs long, so the name is never pushed onto a second line. */}
+      <Row label="ลูกค้า" value={<>{p.customerName || '—'}{p.customerCode && <span className="text-slate-400"> · รหัส {p.customerCode}</span>}</>} />
+      <Row label="ชื่อบนใบเสร็จ" value={p.receiptName || '—'} />
       <Row label="ประเภทลูกค้า" value={p.customerType || '—'} />
-      <Row label="จำนวนเงิน" value={<span className="font-bold">{baht(p.amountNum)}</span>} />
+      <Row label="จำนวนเงิน" value={<span className="font-bold text-lg">{baht(p.amountNum)}</span>} />
       <Row label="ช่องทาง" value={p.bank || '—'} />
       <Row label="พนักงานขาย" value={p.salesName || '—'} />
 
-      <div className="mt-auto pt-3 text-[9px] text-slate-500">
+      <div className="mt-auto pt-4 text-sm text-slate-500">
         ผู้จัดทำ: ______________________
       </div>
     </div>
   );
 }
 
-// Two-line clamp (ellipsis) so a long Thai name can never blow out the A6 page.
-function clamp(text: string): React.ReactNode {
-  return (
-    <span
-      style={{
-        display: '-webkit-box',
-        WebkitLineClamp: 2,
-        WebkitBoxOrient: 'vertical',
-        overflow: 'hidden',
-      }}
-    >
-      {text || '—'}
-    </span>
-  );
-}
-
+// One line per field: label + value inline, ellipsized if it would overflow the A6 width — so a
+// long Thai name (customer / receipt) stays on its own single row instead of wrapping.
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="mb-1.5 text-[11px]">
+    <div className="mb-2 text-base whitespace-nowrap overflow-hidden text-ellipsis">
       <span className="text-slate-400">{label}: </span>
       <span className="text-slate-800">{value}</span>
     </div>

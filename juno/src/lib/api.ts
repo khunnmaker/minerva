@@ -47,6 +47,13 @@ export interface Payment {
   amount: string;
   amountNum: number;
   ocrAmount: string;
+  // withholding tax (หัก ณ ที่จ่าย, task 2) — `amount` above stays the GROSS/RE figure;
+  // whtRate/whtAmount track the withheld slice, and netAmount (server-computed) is what the
+  // bank actually credited (amountNum − parsed whtAmount). whtRate 0 / whtAmount '' = no WHT
+  // (every pre-task-2 row, and any ordinary payment) → netAmount === amountNum. See verifyPayment.
+  whtRate: number;
+  whtAmount: string;
+  netAmount: number;
   bank: string;
   transferAt: string;
   ref: string;
@@ -120,6 +127,8 @@ export interface PaymentFilter {
   source?: SourceFilter;
   // รอยืนยันรับเงิน tab (task 1): unconfirmed cash/cheque — server ignores status/source when set.
   pendingReceive?: boolean;
+  // หัก ณ ที่จ่าย tab (task 2): every withheld payment (any status except void).
+  wht?: boolean;
 }
 
 const TOKEN_KEY = 'juno_token';
@@ -208,6 +217,7 @@ function filterQuery(f: PaymentFilter): string {
   if (f.excludeVoid) p.set('noVoid', '1');
   if (f.source && f.source !== 'all') p.set('source', f.source);
   if (f.pendingReceive) p.set('pendingReceive', 'true');
+  if (f.wht) p.set('wht', 'true');
   const s = p.toString();
   return s ? `?${s}` : '';
 }
@@ -295,11 +305,22 @@ export const readManualSlip = (uploadId: string) =>
     body: JSON.stringify({ uploadId }),
   });
 
+// Withholding tax (หัก ณ ที่จ่าย, task 2) rate options — mirrors the server's WHT_RATES
+// (api/src/routes/juno.ts). 0 = ไม่มี (no WHT).
+export type WhtRate = 0 | 1 | 2 | 3 | 5;
+
 // The check dialog: FIN types the RE number(s) issued in Express (plus the receipt name /
-// customer type) — the only route that can advance a payment to 'verified'.
+// customer type / WHT) — the only route that can advance a payment to 'verified'. whtRate 0
+// (or omitted) clears whtAmount server-side too — see the route's normalization.
 export const verifyPayment = (
   id: string,
-  data: { reNumbers: string[]; receiptName?: string; customerType?: CustomerType },
+  data: {
+    reNumbers: string[];
+    receiptName?: string;
+    customerType?: CustomerType;
+    whtRate?: WhtRate;
+    whtAmount?: string;
+  },
 ) =>
   authed<{ ok: boolean; payment: Payment }>(`/api/juno/payments/${id}/verify`, {
     method: 'POST',
@@ -323,6 +344,22 @@ export const getReport = (groupBy: Report['groupBy'], from?: string, to?: string
   if (from) p.set('from', from);
   if (to) p.set('to', to);
   return authed<Report>(`/api/juno/reports?${p.toString()}`);
+};
+
+// หัก ณ ที่จ่าย (WHT, task 2) tab totals bar — count + gross/wht/net over the given range.
+// Visible to every Juno user (no CEO gate, unlike getReport above).
+export interface WhtSummary {
+  count: number;
+  gross: number;
+  wht: number;
+  net: number;
+}
+export const getWhtSummary = (from?: string, to?: string) => {
+  const p = new URLSearchParams();
+  if (from) p.set('from', from);
+  if (to) p.set('to', to);
+  const s = p.toString();
+  return authed<WhtSummary>(`/api/juno/wht/summary${s ? `?${s}` : ''}`);
 };
 
 // One-click CSV export (same filters as the inbox). Fetched with auth, then downloaded

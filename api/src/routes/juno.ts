@@ -43,6 +43,14 @@ function num(s: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+// Withholding tax (หัก ณ ที่จ่าย, task 2): amount stays the GROSS/RE figure — netOf is what the
+// bank actually credited (gross − withheld). whtAmount '' (the default, and every pre-task-2
+// row) → netOf === num(amount) unchanged, so non-WHT behavior is byte-identical everywhere this
+// is used. Reused by the bank matcher + suggestions ranking below (search netOf for both).
+function netOf(p: { amount: string; whtAmount: string }): number {
+  return num(p.amount) - num(p.whtAmount || '0');
+}
+
 // The row shape the Juno UI consumes (the stored Payment plus a couple of derived fields).
 function toRow(p: {
   id: string; customerId: string | null; customerCode: string; customerName: string;
@@ -54,6 +62,7 @@ function toRow(p: {
   source: string; settleState: string; settledAt: Date | null;
   receivedAt: Date | null; receivedBy: string | null;
   chequeNo: string; chequeBank: string; chequeDueDate: string;
+  whtRate: number; whtAmount: string;
 }) {
   return {
     id: p.id,
@@ -64,6 +73,11 @@ function toRow(p: {
     amount: p.amount,
     amountNum: num(p.amount),
     ocrAmount: p.ocrAmount,
+    // withholding tax (task 2) — amount above stays the gross/RE figure; netAmount is what the
+    // bank actually credited (gross − wht). whtAmount '' → netAmount === amountNum unchanged.
+    whtRate: p.whtRate,
+    whtAmount: p.whtAmount,
+    netAmount: netOf(p),
     bank: p.bank,
     transferAt: p.transferAt,
     ref: p.ref,
@@ -116,6 +130,8 @@ const listFilterSchema = z.object({
   // CEO-only "รอยืนยันรับเงิน" tab (task 1): unconfirmed cash/cheque. Forces its own
   // source/receivedAt/status filter and ignores status/source below — see buildListWhere.
   pendingReceive: z.enum(['true']).optional(),
+  // หัก ณ ที่จ่าย (WHT, task 2) tab — every withheld payment, any status except void.
+  wht: z.enum(['true']).optional(),
 });
 function buildListWhere(q: z.infer<typeof listFilterSchema>): Record<string, unknown> {
   const where: Record<string, unknown> = {};
@@ -132,6 +148,10 @@ function buildListWhere(q: z.infer<typeof listFilterSchema>): Record<string, unk
   if (q.tax && q.tax !== 'all') where.taxInvoiceStatus = q.tax;
   // flag/tax queues exclude voided rows to match the summary badges (§7a)
   if ((q.flagged === '1' || (q.tax && q.tax !== 'all')) && !where.status) where.status = { not: 'void' };
+  if (q.wht === 'true') {
+    where.whtAmount = { not: '' };
+    if (!where.status) where.status = { not: 'void' };
+  }
   if (pendingReceive) {
     // already forced above — skip the source dropdown entirely for this queue.
   } else if (q.source === 'transfer') where.source = { in: ['line', 'manual_transfer'] };
@@ -277,9 +297,14 @@ async function runAutoMatcher(txnIds?: string[]): Promise<{ matched: number; che
     }),
     prisma.payment.findMany({
       where: { status: 'verified', reconciled: false, source: { not: 'cheque' } },
-      select: { id: true, amount: true, transferAt: true, createdAt: true },
+      // whtAmount is fetched so Pass 2 below can amount-match against netOf(p) (gross − wht)
+      // instead of the raw gross — a WHT payment's bank credit lands short by design.
+      select: { id: true, amount: true, whtAmount: true, transferAt: true, createdAt: true },
     }),
     prisma.payment.findMany({
+      // Pass 1 (cheques, below) intentionally still matches on the raw gross `amount` — a
+      // cheque is banked at face value, WHT (if any) is settled separately, never netted off
+      // the cheque deposit itself. Left untouched; whtAmount is not selected here.
       where: { source: 'cheque', reconciled: false, status: { not: 'void' } },
       select: { id: true, amount: true, chequeNo: true },
     }),
@@ -347,7 +372,12 @@ async function runAutoMatcher(txnIds?: string[]): Promise<{ matched: number; che
     for (const t of genericTxns) {
       const matches: string[] = [];
       for (const p of payments) {
-        if (!amountsEqual(t.amount, p.amount)) continue;
+        // WHT (task 2): a withheld payment's bank credit lands SHORT by the withheld slice on
+        // purpose (RE/amount stays the gross) — so match the credit against netOf(p) (gross −
+        // wht), not the gross amount itself. whtAmount '' → netOf(p) === num(p.amount), so this
+        // is byte-identical to the old `amountsEqual(t.amount, p.amount)` for every non-WHT
+        // payment (i.e. everything before task 2, and every ordinary payment after it).
+        if (!amountsEqual(t.amount, String(netOf(p)))) continue;
         if (dayDistance(t.txnAt, paymentTimes.get(p.id)!) > 3) continue;
         matches.push(p.id);
       }
@@ -393,6 +423,30 @@ export async function junoRoutes(app: FastifyInstance) {
       prisma.payment.count({ where: { source: { in: ['cash', 'cheque'] }, receivedAt: null, status: { not: 'void' } } }),
     ]);
     return { total, received, verified, recorded, flagged, taxRequested, cashChequePending, awaitingReceive };
+  });
+
+  // GET /api/juno/wht/summary?from=&to= — period totals for the หัก ณ ที่จ่าย (WHT, task 2)
+  // tab: count + gross/wht/net summed over non-void payments with a withheld amount on file,
+  // in the given Thai-day range. Visible to every Juno user (list + totals only — no
+  // certificate tracking) — same requireApp('juno') gate as the rest of this file, no extra
+  // supervisor check (contrast with the CEO-only /reports below).
+  const whtSummaryQuerySchema = z.object({
+    from: z.string().max(40).optional(),
+    to: z.string().max(40).optional(),
+  });
+  app.get('/api/juno/wht/summary', async (req, reply) => {
+    const parsed = whtSummaryQuerySchema.safeParse(req.query ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_query' });
+    const q = parsed.data;
+
+    const where: Record<string, unknown> = { whtAmount: { not: '' }, status: { not: 'void' } };
+    const range = thaiDayRange(q.from, q.to);
+    if (range) where.createdAt = range;
+
+    const rows = await prisma.payment.findMany({ where, select: { amount: true, whtAmount: true } });
+    const gross = rows.reduce((s, r) => s + num(r.amount), 0);
+    const wht = rows.reduce((s, r) => s + num(r.whtAmount), 0);
+    return { count: rows.length, gross, wht, net: gross - wht };
   });
 
   // GET /api/juno/payments?q=&status=&flagged=&tax=&from=&to=&limit=
@@ -624,16 +678,22 @@ export async function junoRoutes(app: FastifyInstance) {
     return { ok: true, payment: toRow(p) };
   });
 
-  // POST /api/juno/payments/:id/verify { reNumbers, receiptName?, customerType? } — the ONLY
-  // way to reach status 'verified'. FIN types the RE number(s) issued in Express here (one
-  // transfer can pay several receipts, and one RE can be split across several payments — so
-  // this is a list); re-opening the dialog on an already-verified payment is fine (re-verify
-  // just updates fields + re-stamps).
+  // POST /api/juno/payments/:id/verify { reNumbers, receiptName?, customerType?, whtRate?,
+  // whtAmount? } — the ONLY way to reach status 'verified'. FIN types the RE number(s) issued
+  // in Express here (one transfer can pay several receipts, and one RE can be split across
+  // several payments — so this is a list); re-opening the dialog on an already-verified payment
+  // is fine (re-verify just updates fields + re-stamps).
+  // WHT (task 2): whtRate/whtAmount are entered in this SAME dialog (owner-approved design —
+  // one WHT figure per payment, not tracked per-RE). whtRate 0 (default) = no WHT; whtAmount is
+  // the editable withheld baht (may not be an exact rate×gross calc — matches the 50-ทวิ cert).
   const customerTypeSchema = z.enum(['โอนก่อนส่ง', 'เครดิต', 'เก็บปลายทาง', '']).default('');
+  const WHT_RATES = [0, 1, 2, 3, 5] as const;
   const verifyBodySchema = z.object({
     reNumbers: z.array(z.string()).min(1).max(50),
     receiptName: z.string().max(200).optional(),
     customerType: customerTypeSchema.optional(),
+    whtRate: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(5)]).optional(),
+    whtAmount: z.string().max(40).optional(),
   });
   app.post<{ Params: { id: string } }>('/api/juno/payments/:id/verify', async (req, reply) => {
     const body = verifyBodySchema.safeParse(req.body);
@@ -651,6 +711,12 @@ export async function junoRoutes(app: FastifyInstance) {
     }
     if (normalized.length === 0) return reply.code(400).send({ error: 'invalid_re' });
 
+    // whtRate defaults to 0 (no WHT) when omitted; whtAmount only makes sense alongside a
+    // nonzero rate, so a rate of 0 always clears whtAmount too regardless of what was sent —
+    // there is no such thing as "no WHT but a withheld baht figure on file".
+    const whtRate: (typeof WHT_RATES)[number] = body.data.whtRate ?? 0;
+    const whtAmount = whtRate === 0 ? '' : (body.data.whtAmount?.trim() ?? '');
+
     const cur = await prisma.payment.findUnique({ where: { id: req.params.id }, select: { id: true, status: true } });
     if (!cur) return reply.code(404).send({ error: 'not_found' });
     if (cur.status === 'void') return reply.code(409).send({ error: 'void_locked' });
@@ -667,6 +733,8 @@ export async function junoRoutes(app: FastifyInstance) {
         reNumber: normalized.join('/'), // deprecated join mirror — see schema comment
         receiptName: body.data.receiptName?.trim() ?? '',
         customerType: body.data.customerType ?? '',
+        whtRate,
+        whtAmount,
         ...(keepRecorded ? {} : { verifiedById: req.agent?.id ?? null, verifiedAt: new Date() }),
       },
     });
@@ -1021,7 +1089,9 @@ export async function junoRoutes(app: FastifyInstance) {
 
     const candidates = await prisma.payment.findMany({
       where: { status: 'verified', id: { notIn: [...excludeIds] } },
-      select: { id: true, reNumber: true, receiptName: true, customerName: true, senderName: true, amount: true, transferAt: true, createdAt: true },
+      // whtAmount fetched so the ranking below compares the bank credit against netOf(p)
+      // (gross − wht), not the raw gross — see the `exact`/`delta` computation.
+      select: { id: true, reNumber: true, receiptName: true, customerName: true, senderName: true, amount: true, whtAmount: true, transferAt: true, createdAt: true },
       take: 500, // ranked below; a bound keeps this cheap even on a large backlog
     });
 
@@ -1029,12 +1099,18 @@ export async function junoRoutes(app: FastifyInstance) {
     const scored = candidates.map((p) => {
       const pAt = paymentTimestamp(p.transferAt, p.createdAt);
       const days = dayDistance(txn.txnAt, pAt);
-      const exact = amountsEqual(txn.amount, p.amount);
+      // WHT (task 2): compare the bank credit against netOf(p) (gross − wht), not p.amount —
+      // a withheld payment's credit lands short of the gross BY DESIGN, so ranking it against
+      // the gross would wrongly demote (or miss) its true match. whtAmount '' → netOf(p) ===
+      // parseFloat(p.amount), so `exact`/`delta` are byte-identical to before for every
+      // non-WHT payment.
+      const pNet = netOf(p);
+      const exact = amountsEqual(txn.amount, String(pNet));
       const nameScore = Math.max(
         nameSimilarity(txn.payerName || txn.details, p.senderName || p.customerName),
         nameSimilarity(txn.payerName || txn.details, p.receiptName),
       );
-      const delta = Math.abs(txnAmount - parseFloat(p.amount || '0'));
+      const delta = Math.abs(txnAmount - pNet);
       // Rank tiers: exact-amount (closer day wins ties) > name-similarity > same-day-small-delta.
       // Encoded as a single sortable number: tier * 1000 - tiebreak, higher = better.
       let score = 0;

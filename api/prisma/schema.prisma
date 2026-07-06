@@ -232,6 +232,14 @@ model Payment {
   // money (String to match the free-text OCR/entry flow; sums parse on read)
   amount           String             @default("") // confirmed baht amount (staff-entered)
   ocrAmount        String             @default("") // what the OCR read (for the mismatch flag)
+  // withholding tax (หัก ณ ที่จ่าย, task 2) — amount stays the GROSS/RE figure above; the
+  // withheld slice is tracked separately here so net (amount − whtAmount) reconciles the
+  // SHORT bank credit without a false mismatch. whtRate 0 / whtAmount "" = no WHT (the default
+  // for every existing + non-WHT row — net falls back to the gross unchanged). Entered in the
+  // ตรวจแล้ว (RE-check) dialog; whtRate ∈ {0,1,2,3,5} (percent), whtAmount is the editable baht
+  // figure (may differ slightly from a naive rate×gross calc to match the 50-ทวิ certificate).
+  whtRate          Int                @default(0)
+  whtAmount        String             @default("")
   bank             String             @default("") // account received into
   transferAt       String             @default("") // when the customer transferred (as-shown on slip)
   ref              String             @default("") // transfer reference no.

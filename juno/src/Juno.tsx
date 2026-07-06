@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   LogOut, Search, Download, Flag, FileText, Inbox, BarChart3, Scale,
   Loader2, AlertTriangle, CheckCircle2, X, RefreshCw, ExternalLink, Ban, Crown, Printer,
-  Undo2, ClipboardCheck, CheckCheck, Banknote, Plus, Paperclip, Check, Trash2, HandCoins,
+  Undo2, ClipboardCheck, CheckCheck, Banknote, Plus, Paperclip, Check, Trash2, HandCoins, Percent,
 } from 'lucide-react';
 
 // Portal-back link (Jupiter). URL from build-time env; the link is hidden when unset, so it
@@ -11,9 +11,10 @@ const PORTAL_URL: string | undefined = import.meta.env.VITE_PORTAL_URL;
 import {
   getSummary, getPayments, setStatus, setFlag, verifyPayment, getReport, downloadCsv, baht,
   clearSession, getBankSummary, createPayment, settlePayment, uploadSlip, fileToBase64, readManualSlip,
-  deletePayment, confirmReceived,
+  deletePayment, confirmReceived, getWhtSummary,
   type Agent, type Payment, type PaymentStatus, type Summary,
   type Report, type PaymentFilter, type CustomerType, type PaymentSource, type SettleState,
+  type WhtRate, type WhtSummary,
 } from './lib/api';
 import PrintCovers from './PrintCovers';
 import Recon from './Recon';
@@ -24,7 +25,16 @@ import AppSwitcher from './AppSwitcher';
 // details captured off the slip flow (name/address/tax-ID) still show in the drawer.
 // 'receive' = CEO-only "รอยืนยันรับเงิน" (task 1): unconfirmed cash/cheque awaiting the CEO's
 // physical receipt confirmation — separate from เงินสด/เช็ค settle state, folded into inbox/flags.
-type View = 'inbox' | 'flags' | 'reports' | 'recon' | 'receive';
+// 'wht' = หัก ณ ที่จ่าย (WHT, task 2): every withheld payment — visible to ALL Juno users
+// (not CEO-only, unlike 'reports'/'receive').
+type View = 'inbox' | 'flags' | 'reports' | 'recon' | 'receive' | 'wht';
+
+// Withholding tax (task 2) rate options — 0 (ไม่มี) plus the Thai statutory rates FIN picks
+// from in the ตรวจแล้ว dialog. Mirrors the server's WHT_RATES (api/src/routes/juno.ts).
+const WHT_RATES: WhtRate[] = [0, 1, 2, 3, 5];
+const DEFAULT_WHT_RATE: WhtRate = 3; // owner spec: default to 3% once WHT is turned on
+// 2dp round to the nearest satang — matches the house `amountsEqual` convention server-side.
+const round2 = (n: number): number => Math.round(n * 100) / 100;
 
 // Thai-locale date/time display for the inbox + drawer (house pattern, vulcan/src/Stock.tsx).
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: '2-digit' });
@@ -94,6 +104,10 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
 
   const tabs: { key: View; label: string; icon: React.ReactNode; count?: number }[] = [
     { key: 'inbox', label: 'รายการรับเงิน', icon: <Inbox size={16} />, count: summary?.total },
+    // หัก ณ ที่จ่าย (WHT, task 2) — visible to EVERY Juno user (not CEO-gated, unlike รอยืนยัน
+    // รับเงิน/รายงาน below): list + period totals only, no certificate tracking. Its own totals
+    // bar (fetched inside PaymentsView) covers the count, so no badge here.
+    { key: 'wht', label: 'หัก ณ ที่จ่าย', icon: <Percent size={16} /> },
     // รอยืนยันรับเงิน is CEO-only (server 403s POST /receive for non-supervisor; the confirm
     // action itself mirrors the delete gate) — omit the tab for finance/MD so it's never shown.
     ...(isCeo ? [{ key: 'receive' as const, label: 'รอยืนยันรับเงิน', icon: <HandCoins size={16} />, count: summary?.awaitingReceive }] : []),
@@ -185,6 +199,8 @@ function PaymentsView({ view, onChanged, canDelete, isCeo }: { view: Exclude<Vie
   const [bulkVoidConfirm, setBulkVoidConfirm] = useState(false);
   // inline "ลบถาวร N รายการ — กู้คืนไม่ได้" confirm before batch-delete runs (CEO-only)
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
+  // หัก ณ ที่จ่าย (WHT, task 2) totals bar — fetched alongside the list on the wht tab only.
+  const [whtSummary, setWhtSummary] = useState<WhtSummary | null>(null);
 
   const filter: PaymentFilter = {
     q: q.trim() || undefined,
@@ -196,6 +212,8 @@ function PaymentsView({ view, onChanged, canDelete, isCeo }: { view: Exclude<Vie
     ...(view === 'inbox' && method !== 'all' ? { source: method } : {}),
     // รอยืนยันรับเงิน tab (task 1): a fixed queue — no extra filters, just the pending list.
     ...(view === 'receive' ? { pendingReceive: true } : {}),
+    // หัก ณ ที่จ่าย tab (task 2): every withheld payment, still honouring the from/to date pickers.
+    ...(view === 'wht' ? { wht: true } : {}),
   };
 
   const load = useCallback(() => {
@@ -217,6 +235,18 @@ function PaymentsView({ view, onChanged, canDelete, isCeo }: { view: Exclude<Vie
     const t = setTimeout(load, 250); // debounce the search box
     return () => clearTimeout(t);
   }, [load]);
+
+  // หัก ณ ที่จ่าย (WHT, task 2) totals bar — only fetched on the wht tab, refreshed with the
+  // same from/to date pickers as the list (independent of q/status/method, which the summary
+  // endpoint doesn't take).
+  useEffect(() => {
+    if (view !== 'wht') { setWhtSummary(null); return; }
+    let cancelled = false;
+    getWhtSummary(from || undefined, to || undefined)
+      .then((s) => { if (!cancelled) setWhtSummary(s); })
+      .catch(() => { if (!cancelled) setWhtSummary(null); });
+    return () => { cancelled = true; };
+  }, [view, from, to]);
 
   // Close the drawer on tab switch — otherwise a foreign payment stays open beside the wrong queue.
   useEffect(() => setSelected(null), [view]);
@@ -428,6 +458,30 @@ function PaymentsView({ view, onChanged, canDelete, isCeo }: { view: Exclude<Vie
             </button>
           )}
       </div>
+
+      {/* หัก ณ ที่จ่าย (WHT, task 2) period totals bar — list + totals only, no certificate
+          tracking. Mirrors the Reports view's card style; honours the same from/to filters
+          as the list above it. */}
+      {view === 'wht' && whtSummary && (
+        <div className="bg-white rounded-xl border border-slate-200 p-3 mb-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div>
+            <div className="text-xs text-slate-400">จำนวนรายการ</div>
+            <div className="text-lg font-bold">{whtSummary.count}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-400">รวมยอดเต็ม</div>
+            <div className="text-lg font-bold text-slate-700">{baht(whtSummary.gross)}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-400">รวมหัก ณ ที่จ่าย</div>
+            <div className="text-lg font-bold text-amber-700">{baht(whtSummary.wht)}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-400">รวมสุทธิ</div>
+            <div className="text-lg font-bold text-emerald-700">{baht(whtSummary.net)}</div>
+          </div>
+        </div>
+      )}
 
       {/* Bulk-action bar — appears only when ≥1 row is checked. Sticky just below the app's own
           sticky header (title bar + tabs, ~104px — same offset Detail's drawer already uses)
@@ -1170,6 +1224,22 @@ function Detail({ payment, onClose, onUpdate, onDelete, onPrint, canDelete, isCe
               </div>
             )}
 
+            {/* หัก ณ ที่จ่าย (WHT, task 2) — only shown once FIN has entered a withheld amount in
+                the ตรวจแล้ว dialog. amount/amountNum above stays the gross/RE figure throughout;
+                this block is what makes the gross → withheld → net breakdown legible on review.
+                The withheld baht shown is amountNum − netAmount (both server-computed off the
+                SAME netOf()), not a re-parse of the whtAmount string, so it can never drift from
+                the server's own arithmetic. */}
+            {p.whtAmount !== '' && (
+              <div className="mx-4 mt-3 p-2 rounded-lg bg-amber-50 text-amber-800 text-xs flex items-center justify-between gap-2">
+                <Percent size={14} className="shrink-0" />
+                <span className="flex-1">
+                  ยอดเต็ม {baht(p.amountNum)} · หัก ณ ที่จ่าย {p.whtRate}% = {baht(p.amountNum - p.netAmount)}
+                </span>
+                <span className="font-semibold whitespace-nowrap">สุทธิ {baht(p.netAmount)}</span>
+              </div>
+            )}
+
             {p.note && (
               <div className="mx-4 mt-3 p-2 rounded-lg bg-slate-50 text-slate-600 text-xs whitespace-pre-wrap">{p.note}</div>
             )}
@@ -1422,6 +1492,102 @@ function ReChipsBox({ state, onEnter, autoFocus }: {
   );
 }
 
+// ── Shared WHT (หัก ณ ที่จ่าย, task 2) control logic — used by CheckDialog only (see the
+// BatchCheckDialog note below for why the batch path leaves WHT out). Mirrors the
+// useReChipsInput hook style: one implementation, reset() to re-seed from a different payment.
+// The rate picker AUTO-COMPUTES the withheld baht from the payment's gross (round to 2dp), but
+// the baht stays user-editable afterward (to match the 50-ทวิ cert / rounding) — so this hook
+// tracks the computed baht as its own state and only re-derives it when the RATE changes, never
+// clobbering a manual edit on every render.
+function useWhtControl(payment: Payment) {
+  const [on, setOn] = useState(payment.whtRate > 0);
+  const [rate, setRate] = useState<WhtRate>(payment.whtRate > 0 ? (payment.whtRate as WhtRate) : DEFAULT_WHT_RATE);
+  const [amountStr, setAmountStr] = useState(payment.whtAmount);
+
+  // Turning WHT on (from off) seeds the baht from a fresh rate×gross calc; turning off just
+  // hides the controls (state is zeroed at save-time in toBody(), not here, so flipping back on
+  // mid-edit doesn't lose the figure the user already had).
+  function toggleOn(next: boolean) {
+    setOn(next);
+    if (next && amountStr === '') setAmountStr(String(round2((payment.amountNum * rate) / 100)));
+  }
+  // Recompute from the gross whenever the rate changes — this is the "auto-compute" the owner
+  // asked for; the resulting figure remains a normal editable input afterward.
+  function changeRate(next: WhtRate) {
+    setRate(next);
+    setAmountStr(String(round2((payment.amountNum * next) / 100)));
+  }
+
+  const netPreview = round2(payment.amountNum - (parseFloat(amountStr) || 0));
+
+  // Re-seed every field from a (possibly different) payment — used by CheckDialog when it
+  // re-opens on a different row, and would be used by a batch queue's goTo() if one existed.
+  function reset(p: Payment) {
+    setOn(p.whtRate > 0);
+    setRate(p.whtRate > 0 ? (p.whtRate as WhtRate) : DEFAULT_WHT_RATE);
+    setAmountStr(p.whtAmount);
+  }
+
+  // The exact { whtRate, whtAmount } pair verifyPayment expects — off always normalizes to
+  // 0/'' regardless of whatever was typed while it was on, matching the server's own
+  // whtRate===0-clears-whtAmount normalization (belt-and-suspenders, not load-bearing).
+  function toBody(): { whtRate: WhtRate; whtAmount: string } {
+    return on ? { whtRate: rate, whtAmount: amountStr.trim() } : { whtRate: 0, whtAmount: '' };
+  }
+
+  return { on, toggleOn, rate, changeRate, amountStr, setAmountStr, netPreview, reset, toBody };
+}
+
+// The WHT section UI (checkbox + rate picker + editable baht + read-only net) shared by its one
+// caller today (CheckDialog) — factored out so a future batch/other dialog can reuse it verbatim.
+// Takes only the `wht` control state — everything it renders (rate/amount/net preview) is
+// already derived off the payment inside useWhtControl, so no separate `payment` prop is needed.
+function WhtSection({ wht }: { wht: ReturnType<typeof useWhtControl> }) {
+  return (
+    <div className="rounded-lg border border-slate-200 p-2.5 space-y-2">
+      <label className="flex items-center gap-1.5 text-xs text-slate-600 font-medium">
+        <input
+          type="checkbox"
+          checked={wht.on}
+          onChange={(e) => wht.toggleOn(e.target.checked)}
+          className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-400"
+        />
+        มีหัก ณ ที่จ่าย
+      </label>
+      {wht.on && (
+        <div className="grid grid-cols-2 gap-2 pl-0.5">
+          <label className="block">
+            <span className="text-[11px] text-slate-400">อัตรา</span>
+            <select
+              value={wht.rate}
+              onChange={(e) => wht.changeRate(Number(e.target.value) as WhtRate)}
+              className="w-full mt-0.5 px-2 py-1.5 rounded-lg border border-slate-300 text-sm bg-white"
+            >
+              {WHT_RATES.filter((r) => r > 0).map((r) => (
+                <option key={r} value={r}>{r}%</option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-[11px] text-slate-400">จำนวนที่หัก (บาท)</span>
+            <input
+              value={wht.amountStr}
+              onChange={(e) => wht.setAmountStr(e.target.value)}
+              inputMode="decimal"
+              placeholder="0.00"
+              className="w-full mt-0.5 px-2 py-1.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
+            />
+          </label>
+          <div className="col-span-2 flex items-center justify-between text-xs bg-slate-50 rounded-lg px-2 py-1.5">
+            <span className="text-slate-400">ยอดสุทธิ (หลังหัก)</span>
+            <span className="font-semibold text-slate-700">{baht(wht.netPreview)}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Check dialog (the RE check FIN performs when the receipt is issued in Express) ─────────
 // Small modal, NOT a browser prompt: this is the one place a payment can become 'verified'.
 // FIN can now type/paste SEVERAL RE numbers (one payment may cover many receipts): they go in
@@ -1437,6 +1603,9 @@ function CheckDialog({ payment, onClose, onSaved }: {
     payment.receiptName || payment.taxInvoice.split('\n')[0]?.trim() || payment.customerName,
   );
   const [customerType, setCustomerType] = useState<CustomerType>(payment.customerType);
+  // หัก ณ ที่จ่าย (WHT, task 2) — pre-filled from the payment when re-opening an already-checked
+  // row (useWhtControl reads payment.whtRate/whtAmount on mount).
+  const wht = useWhtControl(payment);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
@@ -1451,6 +1620,7 @@ function CheckDialog({ payment, onClose, onSaved }: {
         reNumbers: finalRe,
         receiptName: receiptName.trim(),
         customerType,
+        ...wht.toBody(),
       });
       onSaved(res.payment);
     } catch (e) {
@@ -1502,6 +1672,8 @@ function CheckDialog({ payment, onClose, onSaved }: {
           </div>
         </div>
 
+        <WhtSection wht={wht} />
+
         {err && <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-2">{err}</div>}
 
         <div className="flex justify-end gap-2 pt-1">
@@ -1526,6 +1698,14 @@ function CheckDialog({ payment, onClose, onSaved }: {
 // advances; ใช้กับทุกใบที่เหลือ (M) applies the SAME entered RE(s)/receiptName/customerType to
 // every remaining row in one pass (the "one RE shared across several payments" case) — per
 // owner decision, not a new endpoint: it just loops verifyPayment like the rest of this queue.
+// WHT (task 2) is deliberately left OUT of this dialog: every verifyPayment call below omits
+// whtRate/whtAmount, which the route treats as "no WHT" (whtRate defaults to 0, clearing
+// whtAmount too) — same as leaving the checkbox off in CheckDialog. This is intentional, not an
+// oversight: WHT is a per-payment figure computed off EACH row's own gross, so "ใช้กับทุกใบที่
+// เหลือ" copying one payment's withheld baht onto every remaining row (almost certainly a
+// different gross each) would silently misstate the withheld amount on every row but the
+// first. WHT rows must be verified one at a time in CheckDialog (still reachable per-row from
+// the drawer even for a payment that was part of a batch selection).
 function BatchCheckDialog({ payments, onDone }: {
   payments: Payment[];
   onDone: () => void;

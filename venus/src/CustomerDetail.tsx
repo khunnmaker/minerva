@@ -180,9 +180,9 @@ function Overview({
           {reorderCount > 0 && stats.reorderDue && (
             <div className="mt-3 pt-3 border-t border-slate-100 space-y-1">
               {stats.reorderDue.map((r) => (
-                <div key={r.sku} className="text-xs text-slate-600 flex items-center justify-between">
-                  <span>ถึงรอบสั่ง: <span className="font-mono">{r.sku}</span></span>
-                  <span className="text-rose-600 font-medium">เลยรอบ {r.dueSinceDays} วัน (ปกติทุก {r.medianGapDays} วัน)</span>
+                <div key={r.sku} className="text-xs text-slate-600 flex items-center justify-between gap-2">
+                  <span className="truncate">ถึงรอบสั่ง: {r.name || <span className="font-mono">{r.sku}</span>} {r.name && <span className="text-slate-300 font-mono">({r.sku})</span>}</span>
+                  <span className="text-rose-600 font-medium whitespace-nowrap">เลยรอบ {r.dueSinceDays} วัน (ปกติทุก {r.medianGapDays} วัน)</span>
                 </div>
               ))}
             </div>

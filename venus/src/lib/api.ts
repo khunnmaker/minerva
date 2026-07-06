@@ -56,6 +56,7 @@ export interface VenusCustomerListRow extends VenusCustomer {
 // Mirrors CustomerStats (api/prisma/schema.prisma) field-for-field.
 export interface ReorderDueItem {
   sku: string;
+  name: string | null;
   lastPurchase: string;
   medianGapDays: number;
   dueSinceDays: number;

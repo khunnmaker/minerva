@@ -289,6 +289,8 @@ export async function venusRoutes(app: FastifyInstance) {
                   saleDocId: saleDoc.id,
                   lineNo: l.lineNo,
                   sku: l.sku,
+                  name: l.name || null, // product name as printed on the report
+                  unit: l.unit || null,
                   productId: null, // Product match resolved on read (Vulcan SKU convention), not stored here
                   qty: l.qty,
                   unitPrice: l.unitPrice === null ? '' : String(l.unitPrice),
@@ -589,9 +591,11 @@ export async function venusRoutes(app: FastifyInstance) {
       void: d.void,
       lines: d.lines.map((l) => ({
         sku: l.sku,
-        name: l.sku ? (productBySku.get(l.sku)?.nameTh || productBySku.get(l.sku)?.nameEn || null) : null,
+        // the line's own printed name is the source of truth; fall back to the Product
+        // catalog only when a line predates name-capture.
+        name: l.name || (l.sku ? productBySku.get(l.sku)?.nameTh || productBySku.get(l.sku)?.nameEn || null : null),
         qty: l.qty,
-        unit: null as string | null, // no unit field on SaleLine yet — slot for a later import enrichment
+        unit: l.unit,
         amount: parseMoney(l.amount),
       })),
     }));
@@ -616,7 +620,7 @@ export async function venusRoutes(app: FastifyInstance) {
         } else {
           cyclesBySku.set(l.sku, {
             sku: l.sku,
-            name: productBySku.get(l.sku)?.nameTh || productBySku.get(l.sku)?.nameEn || null,
+            name: l.name || productBySku.get(l.sku)?.nameTh || productBySku.get(l.sku)?.nameEn || null,
             count: 1,
             totalQty: l.qty,
             lastPurchase: d.date,

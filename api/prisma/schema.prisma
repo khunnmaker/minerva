@@ -774,6 +774,10 @@ model SaleLine {
   saleDoc   SaleDoc @relation(fields: [saleDocId], references: [id])
   lineNo    Int
   sku       String?
+  // product name as printed on the sales report (OESOC line) — the source of truth for
+  // what was sold, since ~60% of sold SKUs aren't in the 1187-item Product catalog.
+  name      String?
+  unit      String? // ชิ้น / กล่อง / ขวด … as printed on the line
   productId String? // Product.sku, once matched
   qty       Float   @default(0)
   unitPrice String  @default("")

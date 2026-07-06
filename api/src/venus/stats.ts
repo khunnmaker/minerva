@@ -94,6 +94,7 @@ function parseMoney(s: string | null | undefined): number {
 
 export interface ReorderDueItem {
   sku: string;
+  name: string | null; // product name as printed on the report (for display)
   lastPurchase: string; // ISO date
   medianGapDays: number;
   dueSinceDays: number; // how many days past the due point (today - (lastPurchase + multiplier*median))
@@ -141,7 +142,7 @@ export async function recomputeStats(
       customerCode: true,
       date: true,
       total: true,
-      lines: { select: { sku: true, qty: true, unitPrice: true, amount: true } },
+      lines: { select: { sku: true, name: true, qty: true, unitPrice: true, amount: true } },
     },
   });
 
@@ -157,6 +158,7 @@ export async function recomputeStats(
     // per-SKU purchase dates + unit prices, for reorder cycles (all dates in RFM window)
     skuDates: Map<string, Date[]>;
     skuMaxUnitPrice: Map<string, number>;
+    skuName: Map<string, string>; // sku -> product name (for display on reorder-due items)
   }
   const byCustomer = new Map<string, CustAgg>();
 
@@ -174,6 +176,7 @@ export async function recomputeStats(
         prevWindowOrders: 0,
         skuDates: new Map(),
         skuMaxUnitPrice: new Map(),
+        skuName: new Map(),
       };
       byCustomer.set(code, a);
     }
@@ -199,6 +202,7 @@ export async function recomputeStats(
         const up = parseMoney(line.unitPrice);
         const prevMax = agg.skuMaxUnitPrice.get(line.sku) ?? 0;
         if (up > prevMax) agg.skuMaxUnitPrice.set(line.sku, up);
+        if (line.name && !agg.skuName.has(line.sku)) agg.skuName.set(line.sku, line.name);
       }
     }
 
@@ -275,6 +279,7 @@ export async function recomputeStats(
       if (daysSinceLast > dueThreshold) {
         reorderDue.push({
           sku,
+          name: a.skuName.get(sku) ?? null,
           lastPurchase: lastPurchase.toISOString(),
           medianGapDays: Math.round(medianGap * 10) / 10,
           dueSinceDays: Math.round(daysSinceLast - dueThreshold),

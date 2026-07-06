@@ -11,7 +11,7 @@ import {
 const PORTAL_URL: string | undefined = import.meta.env.VITE_PORTAL_URL;
 import {
   getSummary, getPayments, setStatus, setFlag, verifyPayment, getReport, downloadCsv, baht,
-  clearSession, getBankSummary, createPayment, settlePayment, uploadSlip, fileToBase64, readManualSlip,
+  logout, getBankSummary, createPayment, settlePayment, uploadSlip, fileToBase64, readManualSlip,
   deletePayment, confirmReceived, getWhtSummary, updatePayment,
   type Agent, type Payment, type PaymentStatus, type Summary,
   type Report, type PaymentFilter, type CustomerType, type PaymentSource, type SettleState,
@@ -134,7 +134,7 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
               </a>
             )}
             <span className="text-slate-500 hidden sm:inline">{agent.name}</span>
-            <button onClick={() => { clearSession(); onLogout(); }} className="flex items-center gap-1 text-slate-500 hover:text-rose-600">
+            <button onClick={() => { void logout(); onLogout(); }} className="flex items-center gap-1 text-slate-500 hover:text-rose-600">
               <LogOut size={15} /> ออก
             </button>
           </div>

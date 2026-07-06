@@ -253,6 +253,25 @@ export async function backfillKbEmbeddings(): Promise<void> {
 }
 
 // the canonical list every boot (see syncStaff).
+// The group's companies — the JupiterCompany dimension for the accounting layer. This
+// FORMALISES the ad-hoc `entity` code (PROM|DENL) already on CeresExpense/CashMovement into
+// the full group. CREATE-IF-MISSING only (update:{}), so once a row exists the supervisor can
+// freely rename / recolour it or add a 6th company in-app without a boot overwriting them.
+// (DENL/KPKF kind + KPKF Thai name left blank pending owner confirmation.)
+const JUPITER_COMPANIES = [
+  { code: 'PROM', name: 'Prominent', nameTh: 'พรอมิเนนต์', kind: 'distribution', color: '#0EA5E9', sortOrder: 1 },
+  { code: 'TONR', name: 'Tonmai Residence', nameTh: 'ต้นไม้ เรสซิเดนซ์', kind: 'property', color: '#16A34A', sortOrder: 2 },
+  { code: 'DENC', name: 'DentalPort Dental Clinic', nameTh: 'เดนทัลพอร์ต คลินิกทันตกรรม', kind: 'clinic', color: '#8B5CF6', sortOrder: 3 },
+  { code: 'DENL', name: 'DentalPort', nameTh: 'เดนทัลพอร์ต', kind: 'lab', color: '#EC4899', sortOrder: 4 },
+  { code: 'KPKF', name: 'Khun Phua Khun', nameTh: '', kind: '', color: '#F59E0B', sortOrder: 5 },
+];
+
+async function syncCompanies(): Promise<void> {
+  for (const c of JUPITER_COMPANIES) {
+    await prisma.jupiterCompany.upsert({ where: { code: c.code }, update: {}, create: c });
+  }
+}
+
 export async function ensureSeeded(): Promise<void> {
   try {
     if ((await prisma.kbEntry.count({ where: { status: 'active' } })) === 0) {
@@ -276,6 +295,7 @@ export async function ensureSeeded(): Promise<void> {
     }
 
     await syncStaff();
+    await syncCompanies();
 
     // Release orphaned promote claims: a row stuck at 'promoting' at BOOT can only be a leftover
     // from a crash mid-promote (no request can still be in flight at boot) — reset it to

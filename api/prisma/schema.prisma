@@ -1025,6 +1025,57 @@ model VenusCard {
   createdAt    DateTime @default(now())
 }
 
+// ─── Jupiter (accounting / consolidation — "the king") ───────────────────
+// Jupiter is the GROUP-WIDE accounting layer over every company. Phase 1 is a
+// consolidated owner's cockpit + a monthly close pack — NOT yet a double-entry
+// ledger (that is Phase 2, when the Appoint Alliance chart of accounts + posting
+// land). JupiterCompany FORMALISES the ad-hoc `entity` code already used on
+// CeresExpense/CashMovement (today just PROM|DENL) into the full group; JupiterTxn
+// is a single-line income/expense record — money as String baht to match
+// Payment/CeresExpense's free-text/OCR convention (sums parse on read). Supervisor-only.
+model JupiterCompany {
+  code      String       @id // group entity code: PROM | TONR | DENC | DENL | KPKF
+  name      String       @default("") // Prominent, Tonmai Residence, DentalPort Clinic, …
+  nameTh    String       @default("")
+  kind      String       @default("") // free label: distribution | property | clinic | lab | fnb …
+  color     String       @default("#6D28D9") // dashboard accent (hex)
+  taxId     String       @default("") // เลขประจำตัวผู้เสียภาษี (13 digits) — for Phase 3 tax outputs
+  vatReg    Boolean      @default(true) // จดทะเบียนภาษีมูลค่าเพิ่ม?
+  active    Boolean      @default(true)
+  sortOrder Int          @default(0)
+  txns      JupiterTxn[]
+}
+
+model JupiterTxn {
+  id            String         @id @default(cuid())
+  companyCode   String // -> JupiterCompany.code (the group entity)
+  company       JupiterCompany @relation(fields: [companyCode], references: [code])
+  // income (money in) | expense (money out) — the primary axis of the cockpit.
+  direction     String         @default("expense") // income | expense
+  date          DateTime       @default(now()) // accounting date — the period this falls in
+  party         String         @default("") // customer or vendor name (free-text snapshot)
+  category      String         @default("") // maps toward the Appoint Alliance CoA in Phase 2
+  // money — String baht (matches Payment/CeresExpense). `amount` = the NET received/paid
+  // (what the slip/bank shows); vat/wht tracked alongside. "" = none.
+  amount        String         @default("")
+  vatAmount     String         @default("") // ภาษีขาย (income) / ภาษีซื้อ (expense)
+  whtAmount     String         @default("") // หัก ณ ที่จ่าย withheld on this txn
+  note          String         @default("")
+  // provenance: 'manual' = typed in Jupiter, 'ai' = AI natural-language entry, 'sync:<deity>'
+  // = mirrored from another app (juno/ceres/venus) in Phase 1b. sourceRef = the source row id
+  // (idempotency key for sync so a re-run never double-books).
+  source        String         @default("manual")
+  sourceRef     String         @default("")
+  createdById   String?
+  createdByName String         @default("")
+  createdAt     DateTime       @default(now())
+
+  @@index([companyCode, date])
+  @@index([direction])
+  @@index([source])
+  @@index([sourceRef])
+}
+
 // ─── DEFERRED TO M3: pgvector embedding tables (spec §5 note) ────────────
 // Activate in M3 once the database has the `vector` extension. Steps:
 //   1. add `previewFeatures = ["postgresqlExtensions"]` to the generator

@@ -35,41 +35,49 @@ export const EQUIPMENT_PRICE_THRESHOLD = Number(process.env.VENUS_EQUIPMENT_PRIC
 //
 // Segment rule (checked in this order — first match wins):
 //   1. ลูกค้าชั้นดี  (Champions)  — R>=4 AND F>=4 AND M>=4: buys often, recently, big spend.
-//   2. หายไปแล้ว    (Lost)        — R<=2 AND F<=2: barely bought before AND long gone.
-//   3. เสี่ยงหาย    (At-Risk)     — R<=2 AND F>=3: USED to buy a lot/often (real history),
-//                                    but recency has stretched out — the "quietly fading"
-//                                    case the brief calls out by name ("high F/M history,
-//                                    R stretching").
-//   4. มาใหม่       (New)         — F<=2 AND R>=4: few purchases so far, but recent — too
+//   2. เสี่ยงหาย    (At-Risk)     — R<=2 AND (F>=4 OR M>=4): was GENUINELY valuable (high
+//                                    frequency OR high spend history) but recency has
+//                                    stretched — the "quietly fading" customer worth saving
+//                                    (brief: "high F/M history, R stretching"). Requires real
+//                                    history (top-quintile F or M), NOT a mid-tier score — a
+//                                    customer who only ever bought once or twice is Lost, not
+//                                    At-Risk, no matter how the quintiles fall.
+//   3. หายไปแล้ว    (Lost)        — R<=2 and not At-Risk: long gone AND never high-value.
+//   4. มาใหม่       (New)         — R>=4 AND F<=2: few purchases so far, but recent — too
 //                                    early to call loyal or lost.
 //   5. ลูกค้าประจำ  (Loyal)       — everything else: steady, unremarkable middle.
 export type Segment = 'ลูกค้าชั้นดี' | 'ลูกค้าประจำ' | 'มาใหม่' | 'เสี่ยงหาย' | 'หายไปแล้ว';
 
 export function segmentFor(rScore: number, fScore: number, mScore: number): Segment {
   if (rScore >= 4 && fScore >= 4 && mScore >= 4) return 'ลูกค้าชั้นดี';
-  if (rScore <= 2 && fScore <= 2) return 'หายไปแล้ว';
-  if (rScore <= 2 && fScore >= 3) return 'เสี่ยงหาย';
-  if (fScore <= 2 && rScore >= 4) return 'มาใหม่';
+  if (rScore <= 2 && (fScore >= 4 || mScore >= 4)) return 'เสี่ยงหาย';
+  if (rScore <= 2) return 'หายไปแล้ว';
+  if (rScore >= 4 && fScore <= 2) return 'มาใหม่';
   return 'ลูกค้าประจำ';
 }
 
-// Quintile scoring: rank ascending values 1..5 across the whole customer base (ties share
-// a bucket boundary — plain positional quantile, not a strict rank). `invert` flips the
-// direction (used for Recency, where a SMALLER day-count is BETTER and should score higher).
+// Quintile scoring: score ascending values into 1..5 across the whole customer base.
+// TIE-AWARE: every customer with the SAME value gets the SAME score — ties must never be
+// split across score buckets, or two customers with identical frequency/recency/spend could
+// land in different segments (with a low-frequency base, e.g. hundreds of customers all at
+// F=1, positional bucketing would arbitrarily scatter them across scores 1–3). Each tie
+// group takes the bucket of its FIRST (lowest) rank; for all-distinct values this reduces to
+// a plain positional quintile. `invert` flips direction for Recency (smaller day-count = better).
 export function quintileScores(values: number[], invert: boolean): number[] {
   const n = values.length;
   if (n === 0) return [];
-  const sortedIdx = values
+  const order = values
     .map((v, i) => ({ v, i }))
-    .sort((a, b) => a.v - b.v)
-    .map((x) => x.i);
+    .sort((a, b) => a.v - b.v);
   const scores = new Array<number>(n);
-  for (let rank = 0; rank < n; rank++) {
-    const idx = sortedIdx[rank];
-    // bucket 0..4 by position, then to 1..5 score (ascending-value = higher score by default)
-    const bucket = Math.min(4, Math.floor((rank / n) * 5));
+  let k = 0;
+  while (k < n) {
+    let j = k;
+    while (j < n && order[j].v === order[k].v) j++; // [k, j) is one tie group (equal values)
+    const bucket = Math.min(4, Math.floor((k / n) * 5));
     const score = invert ? 5 - bucket : bucket + 1;
-    scores[idx] = score;
+    for (let t = k; t < j; t++) scores[order[t].i] = score;
+    k = j;
   }
   return scores;
 }

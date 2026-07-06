@@ -16,7 +16,7 @@ import {
   toStatus,
 } from './connection.js';
 import { cloudLogin, CloudError, fixturePath } from './cloud.js';
-import { syncPending, resolveShadow, buildPosFromPending, generatePoPdf } from './po.js';
+import { syncPending, resolveShadow, buildPosFromPending, generatePoPdf, receiveSecret } from './po.js';
 import {
   gmailStatus,
   clearToken,
@@ -301,6 +301,26 @@ app.get(
   h(async (_req, res) => {
     const pending = await prisma.pendingRequest.findMany({ orderBy: { syncedAt: 'desc' } });
     res.json({ pending });
+  }),
+);
+
+// POST /api/pending/:cloudRequestId/receive-secret { qty } — SECRET goods-receipt (Phase 3).
+// Resolves the real SKU from the LOCAL SecretMap → bumps Vulcan stock on the cloud (realSku only
+// as a transient adjust call) → marks the cloud MercuryRequest 'received' (STATUS ONLY). The real
+// SKU is NEVER written onto any cloud row. Ordinary items are received on the CLOUD side instead.
+app.post(
+  '/api/pending/:cloudRequestId/receive-secret',
+  h(async (req, res) => {
+    const qty = Number((req.body ?? {}).qty);
+    if (!Number.isInteger(qty) || qty <= 0)
+      return res.status(400).json({ error: 'qty must be a positive integer' });
+    try {
+      const outcome = await receiveSecret(req.params.cloudRequestId, qty);
+      res.json({ ok: true, ...outcome });
+    } catch (e) {
+      if (e instanceof CloudError) return res.status(e.status).json({ error: e.message });
+      throw e;
+    }
   }),
 );
 

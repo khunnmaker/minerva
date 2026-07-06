@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../../db/prisma.js';
 import { requireAuth, requireApp } from '../../auth/middleware.js';
 import { buildLoginCards } from '../../auth/loginCards.js';
+import { adjustStock } from '../../stock/adjust.js';
 
 // Cloud-Mercury (procurement / buy-side) API — the team/phone-facing reorder board, a mirror
 // of Vulcan on the buy side. Everything here is SECRETS-FREE: MercuryItem/MercuryRequest carry
@@ -47,6 +48,13 @@ const createRequestBody = z.object({
 
 const patchRequestBody = z.object({
   status: z.enum(MERCURY_STATUSES),
+});
+
+// Goods-receipt: a positive integer received quantity. For ORDINARY items this qty is bumped into
+// Vulcan stock (via the shared adjustStock helper); for SECRET items the cloud only records status
+// (the stock bump happens from local-Mercury, which alone knows the real SKU).
+const receiveBody = z.object({
+  qty: z.union([z.string(), z.number()]),
 });
 
 export async function mercuryRoutes(app: FastifyInstance) {
@@ -236,6 +244,64 @@ export async function mercuryRoutes(app: FastifyInstance) {
       if (status === 'received' && !existing.receivedAt) data.receivedAt = new Date();
       const request = await prisma.mercuryRequest.update({ where: { id: req.params.id }, data });
       return { ok: true, request };
+    });
+
+    // POST /api/mercury/requests/:id/receive { qty } — goods-receipt (Phase 3, the buy→stock loop).
+    // Marks the request 'received' (+ receivedAt) and, for ORDINARY items only, bumps Vulcan stock
+    // by qty through the SHARED adjustStock helper (the same Product.stock write + StockAdjustment
+    // audit row Vulcan's /adjust uses — one stock source of truth, Vulcan owns it).
+    //
+    //   ORDINARY item (MercuryItem.vulcanSku is set) → status 'received' + adjustStock(+qty).
+    //   SECRET item (no vulcanSku on the cloud row)   → status 'received' ONLY, NO stock write.
+    //     The cloud cannot resolve a secret item's real SKU BY DESIGN (it lives only in the local
+    //     SecretMap), so the stock bump for a secret item happens from local-Mercury. This keeps
+    //     the invariant: a secret item's real SKU never reaches any cloud row.
+    scoped.post<{ Params: { id: string } }>('/api/mercury/requests/:id/receive', async (req, reply) => {
+      const parsed = receiveBody.safeParse(req.body);
+      if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
+      // A received quantity must be a positive integer.
+      const qty = Number(parsed.data.qty);
+      if (!Number.isInteger(qty) || qty <= 0) return reply.code(400).send({ error: 'bad_qty' });
+
+      const existing = await prisma.mercuryRequest.findUnique({ where: { id: req.params.id } });
+      if (!existing) return reply.code(404).send({ error: 'not_found' });
+      if (existing.status === 'cancelled') return reply.code(409).send({ error: 'cancelled' });
+
+      const item = await prisma.mercuryItem.findUnique({ where: { id: existing.itemId } });
+      if (!item) return reply.code(404).send({ error: 'unknown_item' });
+
+      // SECRET branch: cloud records status only — no stock write here (local-Mercury does it).
+      if (item.isSecret || !item.vulcanSku) {
+        const request = await prisma.mercuryRequest.update({
+          where: { id: existing.id },
+          data: { status: 'received', receivedAt: existing.receivedAt ?? new Date() },
+        });
+        return {
+          ok: true,
+          request,
+          stockUpdated: false,
+          secret: true,
+          detail: 'secret item — receive its stock via local-Mercury',
+        };
+      }
+
+      // ORDINARY branch: bump Vulcan stock by qty through the shared write path, THEN mark received.
+      const adj = await adjustStock({
+        sku: item.vulcanSku,
+        delta: qty,
+        reason: `Mercury goods-receipt: request ${existing.id}`,
+        agentId: req.agent?.id,
+      });
+      if (!adj.ok) {
+        // Don't flip status if the stock write couldn't happen (e.g. the SKU vanished) — surface it.
+        const code = adj.error === 'unknown_sku' ? 404 : 400;
+        return reply.code(code).send({ error: adj.error });
+      }
+      const request = await prisma.mercuryRequest.update({
+        where: { id: existing.id },
+        data: { status: 'received', receivedAt: existing.receivedAt ?? new Date() },
+      });
+      return { ok: true, request, stockUpdated: true, secret: false, product: adj.product };
     });
   });
 }

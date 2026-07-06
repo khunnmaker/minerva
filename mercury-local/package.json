@@ -17,7 +17,8 @@
     "start": "npm run prisma:generate && npm run prisma:deploy && npm run build:client && npm run build:server && node server/dist/launch.js",
     "dev:server": "tsx watch server/src/index.ts",
     "dev:client": "npm --prefix client run dev",
-    "verify:send": "tsx server/src/verify-send.ts"
+    "verify:send": "tsx server/src/verify-send.ts",
+    "verify:loop": "tsx server/src/verify-loop.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

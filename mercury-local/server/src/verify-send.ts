@@ -169,11 +169,18 @@ async function main(): Promise<void> {
   const poAfterDry = await prisma.purchaseOrder.findUnique({ where: { id: po.id } });
   check('dry-run did NOT send (still draft)', poAfterDry?.status === 'draft');
 
-  // Now send with the mock client (explicit) — proves the success bookkeeping.
+  // Now send with the mock client (explicit) — proves the success bookkeeping. The cloud status
+  // push is stubbed (records the call) so this stays hermetic (no network); Phase-3 cloud push is
+  // proven separately in verify-loop.ts.
   const { client: mockC } = makeMockClient();
-  const outcome = await sendPoEmail(po.id, undefined, mockC);
+  const pushed: { ids: string[]; status: string }[] = [];
+  const outcome = await sendPoEmail(po.id, undefined, mockC, async (ids, status) => {
+    pushed.push({ ids, status });
+    return { pushed: ids.length };
+  });
   check('send returned a message id', outcome.messageId === 'mock-msg-id-123');
   check('send marked 1 pending request ordered', outcome.markedOrdered === 1);
+  check('send pushed 1 cloud status (ordered)', outcome.cloudPushed === 1 && pushed[0]?.status === 'ordered');
   const poAfter = await prisma.purchaseOrder.findUnique({ where: { id: po.id } });
   check("PO status = 'sent'", poAfter?.status === 'sent');
   check('PO emailedAt stamped', !!poAfter?.emailedAt);

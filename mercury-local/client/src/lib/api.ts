@@ -215,6 +215,15 @@ export const sync = () =>
 
 export const getPending = () => req<{ pending: PendingRequest[] }>('/pending');
 
+// SECRET goods-receipt (Phase 3, local-side): resolve realSku from the local SecretMap → bump
+// Vulcan stock on the cloud → mark the cloud request 'received' (STATUS ONLY). Ordinary items are
+// received on the CLOUD side instead. Keyed by the cloud request id.
+export const receiveSecret = (cloudRequestId: string, qty: number) =>
+  req<{ ok: boolean; cloudRequestId: string; realSku: string; qty: number; toQty: number }>(
+    `/pending/${encodeURIComponent(cloudRequestId)}/receive-secret`,
+    { method: 'POST', body: JSON.stringify({ qty }) },
+  );
+
 export const getResolvePreview = () =>
   req<{ resolved: ResolvedLine[]; unresolved: UnresolvedLine[] }>('/resolve-preview');
 

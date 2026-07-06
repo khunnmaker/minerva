@@ -7,6 +7,7 @@ import {
   CloudOff,
   RefreshCw,
   PackagePlus,
+  PackageCheck,
   Link2,
   Unlink,
 } from 'lucide-react';
@@ -16,11 +17,14 @@ import {
   disconnect,
   sync,
   getResolvePreview,
+  getPending,
+  receiveSecret,
   buildPos,
   type ConnectionStatus,
   type ResolvedLine,
   type UnresolvedLine,
   type UnresolvedReason,
+  type PendingRequest,
 } from '../lib/api';
 
 // Sync — cloud connection + pull → resolve preview → build POs. This is the local node's only
@@ -36,6 +40,7 @@ export default function Sync() {
   const [usingFixture, setUsingFixture] = useState(false);
   const [resolved, setResolved] = useState<ResolvedLine[]>([]);
   const [unresolved, setUnresolved] = useState<UnresolvedLine[]>([]);
+  const [pending, setPending] = useState<PendingRequest[]>([]);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
@@ -57,11 +62,49 @@ export default function Sync() {
     } catch {
       /* preview optional */
     }
+    try {
+      const { pending } = await getPending();
+      setPending(pending);
+    } catch {
+      /* pending optional */
+    }
   }
   useEffect(() => {
     void loadStatus();
     void loadPreview();
   }, []);
+
+  // SECRET goods-receipt (local-side): the cloud can't resolve a secret item's real SKU, so we
+  // bump Vulcan stock from here (resolve realSku from the local SecretMap → cloud adjust) and mark
+  // the cloud request received. Only offered for pending SECRET items.
+  async function doReceiveSecret(pr: PendingRequest) {
+    if (busy) return;
+    const suggested = (pr.qty ?? '').trim() || '1';
+    const input = window.prompt(
+      `รับของ (secret) "${pr.itemDisplayName}" — ใส่จำนวนที่รับเข้า (จะบวกเข้าสต็อก Vulcan ผ่าน SKU จริงในเครื่องนี้)`,
+      suggested,
+    );
+    if (input === null) return;
+    const qty = Number(input.trim());
+    if (!Number.isInteger(qty) || qty <= 0) {
+      setError('จำนวนที่รับต้องเป็นจำนวนเต็มบวก');
+      return;
+    }
+    setBusy(`receive-${pr.cloudRequestId}`);
+    setError('');
+    setMsg('');
+    try {
+      const r = await receiveSecret(pr.cloudRequestId, qty);
+      setMsg(`รับของแล้ว: ${r.realSku} +${r.qty} → สต็อก ${r.toQty} (SKU จริงไม่ถูกส่งไปเก็บบน cloud)`);
+      await loadPreview();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'รับของไม่สำเร็จ');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const pendingSecret = pending.filter((p) => p.itemIsSecret && p.status === 'pending');
 
   async function doSync() {
     setBusy('sync');
@@ -201,6 +244,46 @@ export default function Sync() {
             </ul>
           )}
         </div>
+      </div>
+
+      {/* Secret goods-receipt (local-side) — only SECRET pending items. Ordinary items are received
+          on the CLOUD board (their SKU is known there); secret items must be received here because
+          only this machine's SecretMap knows the real SKU. */}
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <div className="font-semibold text-sm text-slate-700 mb-2 flex items-center gap-1.5">
+          <PackageCheck size={15} className="text-emerald-600" /> รับของ — สินค้าลับ ({pendingSecret.length})
+        </div>
+        <div className="text-xs text-slate-500 mb-3">
+          รับของสินค้าลับที่เครื่องนี้เท่านั้น (แก้ SKU จริงจาก SecretMap ในเครื่อง → บวกเข้าสต็อก Vulcan บน cloud) — SKU จริงไม่ถูกส่งไปเก็บบน cloud
+          · สินค้าทั่วไปให้รับของที่บอร์ด cloud
+        </div>
+        {pendingSecret.length === 0 ? (
+          <div className="text-xs text-slate-400 py-3 text-center">ไม่มีสินค้าลับที่รอรับของ</div>
+        ) : (
+          <ul className="text-sm divide-y divide-slate-100">
+            {pendingSecret.map((pr) => {
+              const b = busy === `receive-${pr.cloudRequestId}`;
+              return (
+                <li key={pr.cloudRequestId} className="py-2 flex items-center justify-between gap-2">
+                  <span className="truncate">
+                    {pr.itemDisplayName}
+                    <span className="ml-1.5 text-xs rounded bg-purple-100 text-purple-700 px-1.5">ลับ</span>
+                  </span>
+                  <div className="flex items-center gap-3 whitespace-nowrap">
+                    <span className="text-xs text-slate-500">x{pr.qty || '?'}</span>
+                    <button
+                      onClick={() => doReceiveSecret(pr)}
+                      disabled={busy !== null}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50 text-xs font-semibold disabled:opacity-50"
+                    >
+                      {b ? <Loader2 size={13} className="animate-spin" /> : <PackageCheck size={13} />} รับของ
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
     </div>
   );

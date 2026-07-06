@@ -4,6 +4,7 @@ import { prisma } from '../db/prisma.js';
 import { requireAuth, requireRole } from '../auth/middleware.js';
 import { searchProducts } from '../catalog/match.js';
 import { toStockRow } from '../stock/helpers.js';
+import { setStock } from '../stock/adjust.js';
 import { decodeExpressBytes, parseExpressReport, type ParsedStockRow } from '../stock/parseExpressReport.js';
 import { buildGroupAliases, groupOf } from '../stock/aliases.js';
 import { CATALOG_GROUPS, GROUP_KEYS, SUBGROUPS, SUBGROUP_CODES, autoAssignGroup, autoAssignSubgroup } from '../stock/catalogGroups.js';
@@ -150,11 +151,11 @@ export async function stockRoutes(app: FastifyInstance) {
 
   // POST /api/stock/adjust { sku, toQty, reason } — manual correction between imports.
   // Writes Product.stock (+ stockAt = now) and logs a StockAdjustment. toQty=null clears
-  // the stock to unknown. Never creates a catalog row — unknown SKU is rejected.
+  // the stock to unknown. Never creates a catalog row — unknown SKU is rejected. Delegates to
+  // the shared setStock helper (api/src/stock/adjust.ts) — the SINGLE stock-write path that
+  // Mercury goods-receipt also calls, so the write + audit shape is identical everywhere.
   app.post('/api/stock/adjust', async (req, reply) => {
     const body = req.body as { sku?: string; toQty?: unknown; reason?: string };
-    const sku = String(body.sku ?? '').trim();
-    if (!sku || !SKU_RE.test(sku)) return reply.code(400).send({ error: 'bad_sku' });
 
     let toQty: number | null;
     if (body.toQty === null || body.toQty === undefined || body.toQty === '') {
@@ -164,24 +165,20 @@ export async function stockRoutes(app: FastifyInstance) {
       if (!Number.isInteger(n) || n < 0) return reply.code(400).send({ error: 'bad_qty' });
       toQty = n;
     }
-    const reason = String(body.reason ?? '').trim();
 
-    const product = await prisma.product.findUnique({ where: { sku } });
-    if (!product) return reply.code(404).send({ error: 'unknown_sku' });
-    if (product.stock === toQty) {
-      return { ok: true, product: toStockRow(product), unchanged: true };
+    const result = await setStock({
+      sku: String(body.sku ?? ''),
+      toQty,
+      reason: String(body.reason ?? '').trim(),
+      agentId: req.agent?.id,
+    });
+    if (!result.ok) {
+      const code = result.error === 'unknown_sku' ? 404 : 400;
+      return reply.code(code).send({ error: result.error });
     }
-
-    const [updated] = await prisma.$transaction([
-      prisma.product.update({
-        where: { sku },
-        data: { stock: toQty, stockAt: new Date() },
-      }),
-      prisma.stockAdjustment.create({
-        data: { sku, fromQty: product.stock, toQty, reason, byAgentId: req.agent?.id },
-      }),
-    ]);
-    return { ok: true, product: toStockRow(updated) };
+    return result.unchanged
+      ? { ok: true, product: result.product, unchanged: true }
+      : { ok: true, product: result.product };
   });
 
   // POST /api/stock/reorder-point { sku, reorderPoint } — set/clear the low-stock

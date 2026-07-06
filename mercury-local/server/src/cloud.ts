@@ -104,6 +104,96 @@ export async function cloudLogin(
   return { token: body.token, agentName: body.agent?.name, agentEmail: body.agent?.email };
 }
 
+// PATCH a cloud MercuryRequest's status (Phase 3 status push-back, e.g. → 'ordered' after a PO is
+// emailed) via PATCH /api/mercury/requests/:id. Best-effort by design: the caller catches
+// CloudError so a cloud-unreachable / expired-session never blocks the local send bookkeeping.
+export async function cloudPatchStatus(
+  baseUrl: string,
+  token: string,
+  requestId: string,
+  status: string,
+): Promise<void> {
+  // No-op in fixture mode (offline proof) — there is no cloud to write to.
+  if (fixturePath()) return;
+  const res = await cloudFetch(baseUrl, `/api/mercury/requests/${encodeURIComponent(requestId)}`, {
+    method: 'PATCH',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ status }),
+  });
+  if (res.status === 401) throw new CloudError('Session expired — reconnect', 401);
+  if (res.status === 403) throw new CloudError('Account lacks the mercury grant', 403);
+  if (res.status === 404) throw new CloudError('Cloud request not found', 404);
+  if (!res.ok) throw new CloudError(`Failed to update cloud status (HTTP ${res.status})`, 502);
+}
+
+// POST a goods-receipt for a cloud MercuryRequest (Phase 3, SECRET items) via
+// POST /api/mercury/requests/:id/receive. The cloud marks the request 'received' (STATUS ONLY for a
+// secret item — it holds no vulcanSku, so it performs no stock write). The real Vulcan stock bump
+// for a secret item is done SEPARATELY by cloudAdjustStock below, keyed on the LOCAL realSku, which
+// the cloud never sees. Best-effort: caller catches CloudError.
+export async function cloudReceiveRequest(
+  baseUrl: string,
+  token: string,
+  requestId: string,
+  qty: string,
+): Promise<void> {
+  if (fixturePath()) return;
+  const res = await cloudFetch(
+    baseUrl,
+    `/api/mercury/requests/${encodeURIComponent(requestId)}/receive`,
+    {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ qty }),
+    },
+  );
+  if (res.status === 401) throw new CloudError('Session expired — reconnect', 401);
+  if (res.status === 403) throw new CloudError('Account lacks the mercury grant', 403);
+  if (res.status === 404) throw new CloudError('Cloud request not found', 404);
+  if (!res.ok) throw new CloudError(`Failed to mark cloud request received (HTTP ${res.status})`, 502);
+}
+
+// Bump Vulcan stock for a REAL SKU via the cloud's Vulcan stock-adjust endpoint
+// (POST /api/stock/adjust, supervisor-gated — the owner's suite JWT passes). This is the ONLY way a
+// secret item's realSku reaches the cloud: as a transient stock-adjustment CALL, never persisted on
+// any MercuryItem/MercuryRequest row. The endpoint sets an ABSOLUTE quantity, so we read the current
+// stock first and send current+delta (mirrors the shared adjustStock helper's relative semantics).
+export async function cloudAdjustStock(
+  baseUrl: string,
+  token: string,
+  realSku: string,
+  delta: number,
+  reason: string,
+): Promise<{ toQty: number }> {
+  if (fixturePath()) return { toQty: delta };
+  const auth = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+
+  // Read the current stock (list search by SKU) so we can compute the new absolute value.
+  const listRes = await cloudFetch(
+    baseUrl,
+    `/api/stock/list?q=${encodeURIComponent(realSku)}&limit=50`,
+    { headers: { authorization: `Bearer ${token}` } },
+  );
+  if (listRes.status === 401) throw new CloudError('Session expired — reconnect', 401);
+  if (listRes.status === 403) throw new CloudError('Account lacks stock access', 403);
+  if (!listRes.ok) throw new CloudError(`Failed to read stock (HTTP ${listRes.status})`, 502);
+  const listBody = (await listRes.json()) as { products?: { sku: string; stock: number | null }[] };
+  const row = (listBody.products ?? []).find((p) => p.sku === realSku);
+  if (!row) throw new CloudError(`Unknown SKU on the cloud: ${realSku}`, 404);
+  const toQty = (row.stock ?? 0) + delta;
+
+  const res = await cloudFetch(baseUrl, '/api/stock/adjust', {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({ sku: realSku, toQty, reason }),
+  });
+  if (res.status === 401) throw new CloudError('Session expired — reconnect', 401);
+  if (res.status === 403) throw new CloudError('Account lacks stock access', 403);
+  if (res.status === 404) throw new CloudError(`Unknown SKU on the cloud: ${realSku}`, 404);
+  if (!res.ok) throw new CloudError(`Failed to adjust stock (HTTP ${res.status})`, 502);
+  return { toQty };
+}
+
 // Pull pending requests + items from the cloud (or the fixture). Filters requests to pending
 // server-side via ?status=pending; items come from GET /api/mercury/items.
 export async function cloudPull(baseUrl: string, token: string): Promise<CloudPull> {

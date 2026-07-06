@@ -2,7 +2,8 @@
 // against the local DB. NOTHING here sends email (that's chunk 2c). See docs/MERCURY_BRIEF.md §5/§6.
 import './env.js';
 import { prisma } from './db.js';
-import { cloudPull } from './cloud.js';
+import { cloudPull, cloudAdjustStock, cloudReceiveRequest, CloudError } from './cloud.js';
+import { loadConnection } from './connection.js';
 import { resolvePending, groupByVendor, type ResolveResult } from './resolve.js';
 import { buildPoPdf, type PdfLine } from './pdf.js';
 
@@ -131,6 +132,71 @@ export async function buildPosFromPending(): Promise<{
     });
   }
   return { created, unresolvedCount: unresolved.length };
+}
+
+// ── Secret goods-receipt (Phase 3, LOCAL-side) ───────────────────────────────────────────────
+// A SECRET item's real SKU lives ONLY in the local SecretMap, so ITS Vulcan stock bump must happen
+// from here (the cloud cannot resolve it by design). Flow for one cloud MercuryRequest:
+//   1. resolve realSku from the local SecretMap (keyed by the request's cloud itemId),
+//   2. call the cloud Vulcan stock-adjust endpoint to bump Product.stock by qty (audit reason
+//      "Mercury secret goods-receipt") — this is the ONLY moment realSku touches the cloud, as a
+//      transient adjust CALL; it is NEVER written onto a MercuryItem/MercuryRequest row,
+//   3. mark the cloud MercuryRequest 'received' (STATUS ONLY — no SKU),
+//   4. reflect it in the local shadow.
+// The cloud calls are injectable so the whole flow is provable offline with mocks (no network).
+export interface SecretReceiptOutcome {
+  cloudRequestId: string;
+  realSku: string;
+  qty: number;
+  toQty: number; // resulting Vulcan stock after the bump
+}
+
+export async function receiveSecret(
+  cloudRequestId: string,
+  qty: number,
+  deps?: {
+    adjust?: typeof cloudAdjustStock;
+    receive?: typeof cloudReceiveRequest;
+  },
+): Promise<SecretReceiptOutcome> {
+  if (!Number.isInteger(qty) || qty <= 0) throw new CloudError('qty must be a positive integer', 400);
+
+  const shadow = await prisma.pendingRequest.findUnique({ where: { cloudRequestId } });
+  if (!shadow) throw new CloudError('unknown local request — sync first', 404);
+
+  // Resolve the real SKU from the LOCAL SecretMap. This value NEVER goes onto a cloud row.
+  const secret = await prisma.secretMap.findUnique({ where: { cloudItemId: shadow.itemId } });
+  if (!secret) throw new CloudError('no SecretMap for this item — add the mapping first', 409);
+  const realSku = secret.realSku.trim();
+  if (!realSku) throw new CloudError('SecretMap has no realSku — set it first', 409);
+
+  const conn = loadConnection();
+  if (!conn) throw new CloudError('not connected — set up the cloud connection first', 409);
+
+  const adjust = deps?.adjust ?? cloudAdjustStock;
+  const receive = deps?.receive ?? cloudReceiveRequest;
+
+  // 1+2. Bump Vulcan stock for the REAL sku via the cloud adjust endpoint (realSku only leaves as a
+  // transient call). Do this FIRST so a failure here doesn't leave the request marked received with
+  // no stock movement.
+  const { toQty } = await adjust(
+    conn.baseUrl,
+    conn.token,
+    realSku,
+    qty,
+    'Mercury secret goods-receipt',
+  );
+
+  // 3. Mark the cloud MercuryRequest received (STATUS ONLY — the cloud row still has no SKU).
+  await receive(conn.baseUrl, conn.token, cloudRequestId, String(qty));
+
+  // 4. Reflect locally (prune-friendly: the next sync drops non-pending shadows).
+  await prisma.pendingRequest.updateMany({
+    where: { cloudRequestId },
+    data: { status: 'received' },
+  });
+
+  return { cloudRequestId, realSku, qty, toQty };
 }
 
 // ── Generate the PDF for a draft PO. Saves to PurchaseOrder.pdfPath and returns the path. ─────

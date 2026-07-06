@@ -191,3 +191,19 @@ export const setRequestStatus = (id: string, status: RequestStatus) =>
     method: 'PATCH',
     body: JSON.stringify({ status }),
   });
+
+// Goods-receipt (Phase 3, buy→stock loop). Marks the request 'received' and, for ORDINARY items
+// (item.vulcanSku set), bumps Vulcan stock by qty via the shared adjust path. For SECRET items the
+// cloud records status only — receive them via local-Mercury (which alone knows the real SKU), so
+// this is only called from the UI for ordinary items.
+export const receiveRequest = (id: string, qty: number) =>
+  authed<{
+    ok: boolean;
+    request: MercuryRequest;
+    stockUpdated: boolean;
+    secret: boolean;
+    detail?: string;
+  }>(`/api/mercury/requests/${id}/receive`, {
+    method: 'POST',
+    body: JSON.stringify({ qty }),
+  });

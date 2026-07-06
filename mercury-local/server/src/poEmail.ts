@@ -17,6 +17,8 @@ import {
   type RenderedMessage,
   type GmailClient,
 } from './gmail.js';
+import { loadConnection } from './connection.js';
+import { cloudPatchStatus, CloudError } from './cloud.js';
 
 // The composed, editable defaults handed to the review UI. The owner may edit To/CC/subject/body
 // before sending; the PDF attachment is fixed (the generated PO).
@@ -147,12 +149,42 @@ export interface SendOutcome {
   poId: string;
   poNumber: string;
   markedOrdered: number; // how many local PendingRequests were flipped to 'ordered'
+  cloudPushed: number; // how many cloud MercuryRequests were PATCHed → 'ordered' (Phase 3)
+  cloudPushError?: string; // set if the cloud status push failed (send + local update still stand)
+}
+
+// Push a set of cloud MercuryRequest ids to a status (Phase 3). Best-effort: never throws — a
+// cloud-unreachable / expired-session leaves the successful local send + PO update intact, and the
+// next Sync will reconcile. Returns how many were pushed and the first error message (if any).
+// Injectable pusher for tests (defaults to the real cloud client).
+export async function pushCloudStatus(
+  requestIds: string[],
+  status: string,
+  pusher: (baseUrl: string, token: string, id: string, status: string) => Promise<void> = cloudPatchStatus,
+): Promise<{ pushed: number; error?: string }> {
+  if (!requestIds.length) return { pushed: 0 };
+  const conn = loadConnection();
+  if (!conn) return { pushed: 0, error: 'not connected — status not pushed to cloud' };
+  let pushed = 0;
+  let error: string | undefined;
+  for (const id of requestIds) {
+    try {
+      await pusher(conn.baseUrl, conn.token, id, status);
+      pushed++;
+    } catch (e) {
+      // Record the first failure; keep trying the rest (partial push is still progress).
+      if (!error) error = e instanceof CloudError ? e.message : 'cloud push failed';
+    }
+  }
+  return { pushed, error };
 }
 
 export async function sendPoEmail(
   poId: string,
   overrides?: SendOverrides,
   client?: GmailClient,
+  pushCloud: (ids: string[], status: string) => Promise<{ pushed: number; error?: string }> = (ids, status) =>
+    pushCloudStatus(ids, status),
 ): Promise<SendOutcome> {
   const po = await prisma.purchaseOrder.findUnique({ where: { id: poId }, include: { lines: true } });
   if (!po) throw new GmailError('po not found', 404);
@@ -169,7 +201,6 @@ export async function sendPoEmail(
   });
 
   // Mark the underlying local PendingRequests 'ordered' so the local view reflects it.
-  // TODO(Phase 3): push this status back to the cloud MercuryRequest so the team sees "สั่งแล้ว".
   const cloudRequestIds = Array.from(
     new Set(po.lines.map((l) => l.cloudRequestId).filter((x) => x && x.trim())),
   );
@@ -182,7 +213,11 @@ export async function sendPoEmail(
     markedOrdered = upd.count;
   }
 
-  return { messageId, poId, poNumber, markedOrdered };
+  // Phase 3 — push 'ordered' back to the cloud MercuryRequests so the phone/board shows "สั่งแล้ว".
+  // Best-effort: a cloud-unreachable failure never rolls back the successful send / local update.
+  const { pushed: cloudPushed, error: cloudPushError } = await pushCloud(cloudRequestIds, 'ordered');
+
+  return { messageId, poId, poNumber, markedOrdered, cloudPushed, cloudPushError };
 }
 
 export { GmailError };

@@ -33,9 +33,15 @@ function monthRange(month?: string): { start: Date; end: Date; ym: string } {
       m = mm - 1;
     }
   }
-  const start = new Date(y, m, 1, 0, 0, 0, 0);
-  const end = new Date(y, m + 1, 1, 0, 0, 0, 0);
-  const ym = `${y}-${String(m + 1).padStart(2, '0')}`;
+  // Anchor month boundaries to Thai time (UTC+7) — Railway runs UTC, so naive local-time
+  // Dates would shift every period total by 7h at the boundary. Mirrors the suite's
+  // bank/date convention (api/src/bank/*, ceres thaiDayKey).
+  const sm = m + 1; // 1-based start month
+  const ny = sm === 12 ? y + 1 : y;
+  const nm = sm === 12 ? 1 : sm + 1; // 1-based next month
+  const start = new Date(`${y}-${String(sm).padStart(2, '0')}-01T00:00:00+07:00`);
+  const end = new Date(`${ny}-${String(nm).padStart(2, '0')}-01T00:00:00+07:00`);
+  const ym = `${y}-${String(sm).padStart(2, '0')}`;
   return { start, end, ym };
 }
 
@@ -136,14 +142,18 @@ export async function jupiterAccountingRoutes(app: FastifyInstance) {
 
   // Shared field validation for create/edit. amount required non-empty on create (a txn with
   // no money is meaningless); vat/wht/note/party/category optional (default "").
+  // Money must be numeric (digits, optional commas + one decimal) so a typo can't silently
+  // become NaN→0 in a statutory tax total. MONEY_OPT also permits "" (the "none" default).
+  const MONEY = /^\d[\d,]*(\.\d+)?$/;
+  const MONEY_OPT = /^(\d[\d,]*(\.\d+)?)?$/;
   const txnBase = {
     direction: z.enum(DIRECTIONS),
     date: z.string().datetime().optional(),
     party: z.string().max(300).optional(),
     category: z.string().max(200).optional(),
-    amount: z.string().min(1).max(40),
-    vatAmount: z.string().max(40).optional(),
-    whtAmount: z.string().max(40).optional(),
+    amount: z.string().min(1).max(40).regex(MONEY, 'amount ต้องเป็นตัวเลข'),
+    vatAmount: z.string().max(40).regex(MONEY_OPT, 'VAT ต้องเป็นตัวเลข').optional(),
+    whtAmount: z.string().max(40).regex(MONEY_OPT, 'หัก ณ ที่จ่าย ต้องเป็นตัวเลข').optional(),
     note: z.string().max(2000).optional(),
   };
 
@@ -188,9 +198,9 @@ export async function jupiterAccountingRoutes(app: FastifyInstance) {
         date: z.string().datetime().optional(),
         party: z.string().max(300).optional(),
         category: z.string().max(200).optional(),
-        amount: z.string().min(1).max(40).optional(),
-        vatAmount: z.string().max(40).optional(),
-        whtAmount: z.string().max(40).optional(),
+        amount: z.string().min(1).max(40).regex(MONEY, 'amount ต้องเป็นตัวเลข').optional(),
+        vatAmount: z.string().max(40).regex(MONEY_OPT, 'VAT ต้องเป็นตัวเลข').optional(),
+        whtAmount: z.string().max(40).regex(MONEY_OPT, 'หัก ณ ที่จ่าย ต้องเป็นตัวเลข').optional(),
         note: z.string().max(2000).optional(),
       })
       .safeParse(req.body ?? {});

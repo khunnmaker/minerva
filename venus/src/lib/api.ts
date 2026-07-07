@@ -290,6 +290,8 @@ export interface LoginName {
   email: string;
   name: string;
   kind: 'password' | 'pin';
+  group?: string;
+  gender?: string;
 }
 // PUBLIC — no auth required. Ordered: supervisor first (kind 'password'), then any
 // granted MD/employee cards. Uses the GENERAL suite endpoint (not an app-owned one like

@@ -183,7 +183,7 @@ export default function Login({ onLogin }: { onLogin: (agent: Agent) => void }) 
         ) : (
           <>
             {loadFailed && (
-              <div className="text-[11px] text-slate-400 mb-3">Couldn't load accounts — sign in manually</div>
+              <div className="text-[11px] text-slate-400 mb-3">โหลดรายชื่อไม่สำเร็จ — เข้าสู่ระบบด้วยอีเมล/รหัสผ่าน</div>
             )}
             <label className="block text-xs font-semibold text-slate-500 mb-1">อีเมล</label>
             <input

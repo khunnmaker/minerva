@@ -25,7 +25,7 @@ export async function healthRoutes(app: FastifyInstance) {
   });
 
   // Storage — is the image upload dir (persistent volume in prod) writable?
-  app.get('/health/storage', async () => {
+  app.get('/health/storage', { config: { rateLimit: { max: 6, timeWindow: '60s' } } }, async () => {
     let writable = false;
     try {
       await fs.mkdir(UPLOAD_DIR, { recursive: true });

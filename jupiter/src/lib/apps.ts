@@ -65,12 +65,14 @@ export const APPS: AppDef[] = [
   },
 ];
 
-// Mirrors api/src/auth/jwt.ts hasAppAccess: supervisor → everything; md → ceres only;
+// Mirrors api/src/auth/jwt.ts hasAppAccess: supervisor → everything; md → Ceres + Minerva +
+// Juno (MD_APPS on the server — the MD runs expenses, the sales console, and finance);
 // employee → their own per-person `apps` grant. Keep in lock-step with the server so a tile
 // only ever appears when the same account would pass requireApp on that app's routes.
+const MD_APPS: AppName[] = ['ceres', 'minerva', 'juno'];
 export function hasAppAccess(agent: Agent, app: AppName): boolean {
   if (agent.role === 'supervisor') return true;
-  if (agent.role === 'md') return app === 'ceres';
+  if (agent.role === 'md') return MD_APPS.includes(app);
   return (agent.apps ?? []).includes(app);
 }
 

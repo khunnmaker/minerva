@@ -16,7 +16,11 @@ export const ALL_ROLES = ['supervisor', 'md', 'employee'] as const;
 const TOKEN_ROLES = ['supervisor', 'md', 'employee', 'agent', 'messenger'] as const;
 type TokenRole = (typeof TOKEN_ROLES)[number];
 
-export type AppName = 'minerva' | 'vulcan' | 'juno' | 'ceres' | 'mercury' | 'venus';
+// The suite's app names — the SINGLE source of truth (runtime tuple + type). requireApp,
+// loginCards, and the badges route all derive from this; adding a future god (mars/vesta/
+// neptune) is a one-line edit here that both the type and the runtime checks pick up.
+export const APP_NAMES = ['minerva', 'vulcan', 'juno', 'ceres', 'mercury', 'venus'] as const;
+export type AppName = (typeof APP_NAMES)[number];
 
 // What we put inside the signed token (and hydrate onto each request).
 export interface AuthedAgent {

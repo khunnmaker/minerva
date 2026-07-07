@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../db/prisma.js';
 import { verifyPassword, DUMMY_HASH } from '../auth/password.js';
-import { signToken, type Role, type AppName } from '../auth/jwt.js';
+import { signToken, APP_NAMES, type Role, type AppName } from '../auth/jwt.js';
 import { authedAgentFromToken } from '../auth/middleware.js';
 import { buildLoginCards } from '../auth/loginCards.js';
 import { sessionSetCookie, sessionClearCookie, readSessionToken } from '../auth/cookies.js';
@@ -12,7 +12,8 @@ const loginBody = z.object({
   password: z.string().min(1),
 });
 
-const APP_NAMES = ['minerva', 'vulcan', 'juno', 'ceres', 'mercury', 'venus'] as const;
+// APP_NAMES is imported from auth/jwt.ts — the single source of truth for both the type and
+// this runtime membership check, so a new god is added in exactly one place.
 
 export async function authRoutes(app: FastifyInstance) {
   // POST /api/auth/login — { email, password } -> { token, agent }. Any role may log in here;

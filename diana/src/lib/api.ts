@@ -103,7 +103,7 @@ export interface Clinic {
 }
 
 // ── staff identity ──────────────────────────────────────────────────────────
-export type Role = 'agent' | 'supervisor';
+export type Role = 'supervisor' | 'md' | 'employee';
 export interface Agent {
   id: string;
   email: string;

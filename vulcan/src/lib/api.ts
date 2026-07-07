@@ -398,6 +398,9 @@ export interface NameProposalRow {
   stock: number | null;
   reorderPoint: number | null;
   alias: string | null;
+  // RAW name from the Express accounting report ('' = SKU not in the report). Often carries
+  // variant details (shade codes, colors) the catalog names lost — key reference when reviewing.
+  expressName: string;
 }
 export interface ProposalSummary {
   pending: number;

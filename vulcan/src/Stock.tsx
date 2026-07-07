@@ -1812,6 +1812,28 @@ const PROPOSAL_FILTERS: { key: ProposalFilter; label: string; count: (s: Proposa
   { key: 'all', label: 'ทั้งหมด', count: (s) => s.total },
 ];
 
+// Full-size product photo overlay — click anywhere or press Esc to close.
+function Lightbox({ photoSku, onClose }: { photoSku: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-slate-900/70 flex items-center justify-center p-6 cursor-zoom-out"
+      onClick={onClose}
+    >
+      <img
+        src={`${API_URL}/content/product/${photoSku}`}
+        alt=""
+        className="max-w-[90vw] max-h-[85vh] rounded-2xl bg-white object-contain shadow-2xl"
+        onError={onClose}
+      />
+    </div>
+  );
+}
+
 function ReviewTab() {
   const [groups, setGroups] = useState<CatalogGroupInfo[]>([]);
   const [summary, setSummary] = useState<ProposalSummary | null>(null);
@@ -1820,6 +1842,8 @@ function ReviewTab() {
   const [rows, setRows] = useState<NameProposalRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<'load' | 'bulk' | null>(null);
+  // photoSku currently zoomed in the lightbox (null = closed)
+  const [zoom, setZoom] = useState<string | null>(null);
 
   const loadSummary = useCallback(() => { getProposalSummary().then(setSummary).catch(() => {}); }, []);
   useEffect(() => { getGroups().then((g) => setGroups(g.groups)).catch(() => {}); }, []);
@@ -1961,21 +1985,23 @@ function ReviewTab() {
         ) : (
           <div className="divide-y divide-slate-100 max-h-[64vh] overflow-auto">
             {rows.map((r) => (
-              <ProposalRow key={r.sku} row={r} groupLabel={groupLabel} onDecided={afterDecide} />
+              <ProposalRow key={r.sku} row={r} groupLabel={groupLabel} onDecided={afterDecide} onZoom={setZoom} />
             ))}
           </div>
         )}
       </div>
+      {zoom && <Lightbox photoSku={zoom} onClose={() => setZoom(null)} />}
     </div>
   );
 }
 
 function ProposalRow({
-  row, groupLabel, onDecided,
+  row, groupLabel, onDecided, onZoom,
 }: {
   row: NameProposalRow;
   groupLabel: (g: string | null, sub: string | null) => { text: string; muted: boolean };
   onDecided: (r: NameProposalRow) => void;
+  onZoom: (photoSku: string) => void;
 }) {
   const proposed = (row.proposedNameEn ?? '').trim();
   const [text, setText] = useState(proposed);
@@ -2006,7 +2032,13 @@ function ProposalRow({
   return (
     <div className={`py-2.5 ${flagged ? 'bg-amber-50/60 -mx-4 px-4' : ''}`}>
       <div className="flex items-start gap-2.5">
-        <Thumb photoSku={row.photoSku} size={38} />
+        {row.photoSku ? (
+          <button type="button" onClick={() => onZoom(row.photoSku!)} title="คลิกเพื่อขยายรูป" className="shrink-0 cursor-zoom-in rounded hover:ring-2 hover:ring-indigo-300">
+            <Thumb photoSku={row.photoSku} size={38} />
+          </button>
+        ) : (
+          <Thumb photoSku={null} size={38} />
+        )}
         <div className="min-w-0 flex-1">
           {editable ? (
             <>
@@ -2034,6 +2066,12 @@ function ProposalRow({
             {flagged && <span className="font-sans not-italic text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded font-semibold">⚠ ต้องตรวจสอบ</span>}
           </div>
           {row.nameTh && <div className="text-[11px] text-slate-400 truncate mt-0.5">{row.nameTh}</div>}
+          {row.expressName && (
+            <div className="text-[11px] text-sky-800 truncate mt-0.5" title="ชื่อตามระบบ Express (อ้างอิง)">
+              <span className="text-[9px] font-bold uppercase tracking-wide bg-sky-100 text-sky-700 rounded px-1 py-px mr-1">Express</span>
+              {row.expressName}
+            </div>
+          )}
         </div>
         <StockPill stock={row.stock} reorderPoint={row.reorderPoint} />
         <div className="shrink-0 flex items-center gap-1.5">

@@ -10,6 +10,7 @@ import { buildGroupAliases, groupOf } from '../stock/aliases.js';
 import { autoAssignGroup, autoAssignSubgroup } from '../stock/catalogGroups.js';
 import { loadTaxonomy, PILLARS } from '../stock/taxonomy.js';
 import { NAME_PROPOSALS } from '../catalog/nameProposals.js';
+import { EXPRESS_NAMES } from '../catalog/expressNames.js';
 
 // Merge a product's name tokens (alnum + Thai, length >= 2) into its keyword set, deduped +
 // capped at 30. Shared by the rename route and the name-proposal review flow so an approved
@@ -817,6 +818,9 @@ export async function stockRoutes(app: FastifyInstance) {
     proposedNameEn: p.proposedNameEn, status: p.proposalStatus, needsReview: p.proposalNeedsReview,
     catalogGroup: p.catalogGroup, catalogSubgroup: p.catalogSubgroup,
     stock: p.stock, reorderPoint: p.reorderPoint, alias,
+    // the RAW name from the Express accounting report (static reference data; often carries
+    // variant details — shade codes, colors — that the catalog names lost)
+    expressName: EXPRESS_NAMES[p.sku] ?? '',
   });
 
   const PROPOSAL_SELECT = {

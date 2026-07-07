@@ -1105,6 +1105,48 @@ model OaReadSync {
   @@index([customerId])
 }
 
+// ─── Party (canonical customer/vendor identity — punch #9) ───────────────
+// Today one real customer is forked across up to 4 unlinked rows: Customer (LINE),
+// VenusCustomer (Express code), ClinicAccount (Diana email), OaReadSync (OA id) — joined only
+// by a free-typed, non-normalised `customerCode` string that silently misses on any drift. Party
+// is the canonical spine: ONE row per deduplicated real entity; every external key hangs off
+// PartyIdentity, whose @@unique([channel,key]) makes a (channel,key) point at exactly one Party.
+// ADDITIVE + NON-INVASIVE: nothing else is rewired yet — existing tables gain an optional
+// `partyId` progressively later. Backfill is a run-once script (api/src/scripts/backfillParties),
+// never a boot step; keys are normalised (reuse venus toSearchKey for express_code) before insert.
+model Party {
+  id           String          @id @default(cuid())
+  kind         String          @default("customer") // customer | vendor | payee | carrier | staff
+  displayName  String          @default("")
+  primaryPhone String          @default("") // denormalised best phone (display snapshot, not a key)
+  note         String          @default("")
+  mergedIntoId String? // soft-merge pointer; non-null ⇒ this row was merged into another Party
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  identities   PartyIdentity[]
+
+  @@index([kind])
+  @@index([mergedIntoId])
+}
+
+model PartyIdentity {
+  id         String   @id @default(cuid())
+  partyId    String
+  party      Party    @relation(fields: [partyId], references: [id], onDelete: Cascade)
+  // line_user | oa_chat | express_code | diana_email | phone | ceres_name | agent_email | vendor_local
+  channel    String
+  key        String // NORMALISED value (lowercased/dash-stripped code, folded digits, e-mail, …)
+  rawKey     String   @default("") // as-entered, pre-normalisation (audit)
+  confidence String   @default("confirmed") // confirmed | inferred (name/phone match) | conflict
+  source     String   @default("") // which deity/table asserted it
+  createdAt  DateTime @default(now())
+
+  // (channel,key) is globally unique — the dedup spine: the same identity can never split
+  // across two Parties, and a re-import of an already-known key is idempotent.
+  @@unique([channel, key])
+  @@index([partyId])
+}
+
 // ─── DEFERRED TO M3: pgvector embedding tables (spec §5 note) ────────────
 // Activate in M3 once the database has the `vector` extension. Steps:
 //   1. add `previewFeatures = ["postgresqlExtensions"]` to the generator

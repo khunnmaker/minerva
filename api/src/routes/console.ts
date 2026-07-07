@@ -245,7 +245,7 @@ export async function consoleRoutes(app: FastifyInstance) {
     const messages = ordered.map(({ quoteToken, ...m }) => ({
       ...m,
       agentName: m.agentId ? (agentNameById.get(m.agentId) ?? null) : null,
-      quotable: m.role === 'customer' && !!quoteToken,
+      quotable: !!quoteToken, // customer inbound OR our own sent text/sticker (self-reply)
     }));
 
     return {
@@ -382,6 +382,7 @@ export async function consoleRoutes(app: FastifyInstance) {
         kbIds: [],
         ...(quotedMessageId ? { quotedMessageId } : {}),
         ...(sendResult.channelMsgId ? { channelMsgId: sendResult.channelMsgId } : {}),
+        ...(sendResult.quoteToken ? { quoteToken: sendResult.quoteToken } : {}),
       },
     });
     await prisma.customer.update({ where: { id: customer.id }, data: { lastSeen: new Date() } });
@@ -487,6 +488,7 @@ export async function consoleRoutes(app: FastifyInstance) {
         ...(quotedMessageId && sendText ? { quotedMessageId } : {}),
         ...(attach ?? {}),
         ...(sendResult.channelMsgId ? { channelMsgId: sendResult.channelMsgId } : {}),
+        ...(sendResult.quoteToken ? { quoteToken: sendResult.quoteToken } : {}),
       },
     });
     await prisma.customer.update({ where: { id: customer.id }, data: { lastSeen: new Date() } });

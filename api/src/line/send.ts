@@ -5,6 +5,7 @@ export interface SendResult {
   sent: boolean;
   dryRun: boolean;
   channelMsgId?: string;
+  quoteToken?: string; // LINE token to later quote OUR just-sent text/sticker (enables self-reply)
 }
 
 type LineOutMessage =
@@ -26,8 +27,10 @@ async function push(lineUserId: string, messages: LineOutMessage[]): Promise<Sen
   }
   // @line/bot-sdk Message union — our literals match Text/Image message shapes.
   const res = await c.pushMessage({ to: lineUserId, messages: messages as never });
-  const channelMsgId = res?.sentMessages?.[0]?.id;
-  return { sent: true, dryRun: false, channelMsgId };
+  // sentMessages[0] is the first message of this push; for text/sticker LINE returns a
+  // quoteToken we can later use to quote OUR OWN message. (Cast: the SDK type may omit it.)
+  const firstSent = res?.sentMessages?.[0] as { id?: string; quoteToken?: string } | undefined;
+  return { sent: true, dryRun: false, channelMsgId: firstSent?.id, quoteToken: firstSent?.quoteToken };
 }
 
 // quoteToken (optional): make the customer see a real LINE quote of an earlier message.

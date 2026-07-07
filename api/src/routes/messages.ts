@@ -393,10 +393,13 @@ export async function messageRoutes(app: FastifyInstance) {
       await prisma.message.delete({ where: { id: agentMessage.id } }).catch(() => undefined);
       return reply.code(502).send({ error: 'line_send_failed' });
     }
-    if (sendResult.channelMsgId) {
+    if (sendResult.channelMsgId || sendResult.quoteToken) {
       agentMessage = await prisma.message.update({
         where: { id: agentMessage.id },
-        data: { channelMsgId: sendResult.channelMsgId },
+        data: {
+          ...(sendResult.channelMsgId ? { channelMsgId: sendResult.channelMsgId } : {}),
+          ...(sendResult.quoteToken ? { quoteToken: sendResult.quoteToken } : {}),
+        },
       });
     }
 

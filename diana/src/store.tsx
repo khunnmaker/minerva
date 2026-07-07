@@ -104,7 +104,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => { localStorage.setItem('diana_cart', JSON.stringify(cart)); }, [cart]);
   useEffect(() => { document.documentElement.lang = lang; }, [lang]);
 
-  const login = useCallback((c: Clinic, token: string) => { setClinicSession(token, c); setClinic(c); setAuthOpen(false); }, []);
+  const login = useCallback((c: Clinic, token: string) => {
+    // Clear a cart left by a DIFFERENT clinic (e.g. a shared front-desk PC) so items and
+    // contract prices never leak across accounts; keep it when the same clinic signs back in.
+    const prev = getStoredClinic();
+    if (prev && prev.id !== c.id) { setCart({}); localStorage.removeItem('diana_cart'); }
+    setClinicSession(token, c); setClinic(c); setAuthOpen(false);
+  }, []);
   const logout = useCallback(() => { clearClinicSession(); setClinic(null); setCart({}); }, []);
 
   const addToCart = useCallback((p: PricedProduct) => {

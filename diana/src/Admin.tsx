@@ -18,6 +18,11 @@ export default function Admin() {
 
   if (!agent) return <StaffLogin onLogin={setAgent} />;
 
+  // Order-desk staff (an employee with the 'diana' app grant) manage orders + product info
+  // but NOT clinic approval — that unlocks pricing, so it stays supervisor-only (matches the API).
+  const isSupervisor = agent.role === 'supervisor';
+  const activeTab = tab === 'clinics' && !isSupervisor ? 'orders' : tab;
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
       <header className="bg-white border-b border-slate-200">
@@ -31,11 +36,11 @@ export default function Admin() {
 
       <div className="max-w-5xl mx-auto px-4 py-4">
         <div className="flex gap-1 mb-4 bg-slate-100 rounded-xl p-1 text-sm w-fit">
-          <Tab active={tab === 'clinics'} onClick={() => setTab('clinics')} icon={<Users size={15} />}>คลินิก</Tab>
-          <Tab active={tab === 'orders'} onClick={() => setTab('orders')} icon={<ClipboardList size={15} />}>ออเดอร์</Tab>
-          <Tab active={tab === 'enrichment'} onClick={() => setTab('enrichment')} icon={<Tags size={15} />}>ข้อมูลสินค้า</Tab>
+          {isSupervisor && <Tab active={activeTab === 'clinics'} onClick={() => setTab('clinics')} icon={<Users size={15} />}>คลินิก</Tab>}
+          <Tab active={activeTab === 'orders'} onClick={() => setTab('orders')} icon={<ClipboardList size={15} />}>ออเดอร์</Tab>
+          <Tab active={activeTab === 'enrichment'} onClick={() => setTab('enrichment')} icon={<Tags size={15} />}>ข้อมูลสินค้า</Tab>
         </div>
-        {tab === 'clinics' ? <ClinicsPanel /> : tab === 'orders' ? <OrdersPanel /> : <EnrichmentPanel />}
+        {activeTab === 'clinics' ? <ClinicsPanel /> : activeTab === 'orders' ? <OrdersPanel /> : <EnrichmentPanel />}
       </div>
     </div>
   );

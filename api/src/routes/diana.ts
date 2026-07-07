@@ -3,12 +3,14 @@ import type { Product, ProductEnrichment } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../db/prisma.js';
 import { hashPassword, verifyPassword, DUMMY_HASH } from '../auth/password.js';
-import { requireAuth, requireRole } from '../auth/middleware.js';
+import { requireAuth, requireRole, requireApp } from '../auth/middleware.js';
 import {
   signClinicToken,
   requireClinic,
   requireApprovedClinic,
 } from '../auth/clinicAuth.js';
+import { env } from '../env.js';
+import { sendLineText } from '../line/send.js';
 
 // Diana — the B2B website (prominentdental.com) API. A 3rd READER of the shared
 // catalog: it never writes Product/stock. The public catalog exposes names/photos
@@ -73,7 +75,7 @@ const listQuery = z.object({
 });
 
 const registerBody = z.object({
-  email: z.string().email(),
+  email: z.string().email().toLowerCase(),
   password: z.string().min(8).max(200),
   clinicName: z.string().trim().min(1).max(200),
   contactName: z.string().trim().max(200).default(''),
@@ -82,7 +84,7 @@ const registerBody = z.object({
 });
 
 const loginBody = z.object({
-  email: z.string().email(),
+  email: z.string().email().toLowerCase(),
   password: z.string().min(1),
 });
 
@@ -137,9 +139,23 @@ async function loadPage(where: Record<string, unknown>, page: number, pageSize: 
   return { total, rows, em };
 }
 
+// Best-effort LINE alert to the CEO when a web order lands, so this low-volume,
+// LINE-driven business never leaves an order sitting unseen. Fail-open: a LINE
+// failure must never affect the order flow (the order is already persisted).
+async function notifyNewOrder(o: { lines: { qty: number }[] }, clinicName: string): Promise<void> {
+  const ceo = env.CEO_LINE_USER_ID || env.CERES_CEO_LINE_USER_ID;
+  if (!ceo) return;
+  try {
+    const units = o.lines.reduce((n, l) => n + l.qty, 0);
+    await sendLineText(ceo, `🛒 Diana ออเดอร์ใหม่จาก ${clinicName}\n${o.lines.length} รายการ (รวม ${units} ชิ้น)\nเปิด Diana admin เพื่อยืนยัน`);
+  } catch {
+    // best-effort only — never let a LINE failure affect the order flow.
+  }
+}
+
 export async function dianaRoutes(app: FastifyInstance) {
   // ── PUBLIC catalog (no auth, no price, no stock) ──────────────────────────
-  app.get('/api/diana/catalog', async (req, reply) => {
+  app.get('/api/diana/catalog', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (req, reply) => {
     const parsed = listQuery.safeParse(req.query);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_query' });
     const { q, brand, category, page, pageSize } = parsed.data;
@@ -148,7 +164,7 @@ export async function dianaRoutes(app: FastifyInstance) {
     return { page, pageSize, total, items: rows.map((p) => publicDto(p, em.get(p.sku))) };
   });
 
-  app.get<{ Params: { sku: string } }>('/api/diana/product/:sku', async (req, reply) => {
+  app.get<{ Params: { sku: string } }>('/api/diana/product/:sku', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (req, reply) => {
     const p = await prisma.product.findUnique({ where: { sku: req.params.sku } });
     if (!p || p.status !== 'active') return reply.code(404).send({ error: 'not_found' });
     const e = await prisma.productEnrichment.findUnique({ where: { sku: p.sku } });
@@ -156,7 +172,7 @@ export async function dianaRoutes(app: FastifyInstance) {
   });
 
   // Brand + category facets (with counts) for the public filter UI.
-  app.get('/api/diana/facets', async () => {
+  app.get('/api/diana/facets', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async () => {
     const [brands, categories] = await Promise.all([
       prisma.productEnrichment.groupBy({ by: ['brand'], where: { brand: { not: '' } }, _count: { sku: true } }),
       prisma.productEnrichment.groupBy({ by: ['category'], where: { category: { not: '' } }, _count: { sku: true } }),
@@ -266,6 +282,7 @@ export async function dianaRoutes(app: FastifyInstance) {
       },
       include: { lines: true },
     });
+    void notifyNewOrder(order, clinic.clinicName);
     return reply.code(201).send({ order });
   });
 
@@ -364,7 +381,7 @@ export async function dianaRoutes(app: FastifyInstance) {
 
   // ── STAFF admin: order queue ──────────────────────────────────────────────
   const adminOrdersQuery = z.object({ status: z.enum(['submitted', 'confirmed', 'invoiced', 'cancelled']).optional() });
-  app.get('/api/diana/admin/orders', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/api/diana/admin/orders', { preHandler: [requireAuth, requireApp('diana')] }, async (req, reply) => {
     const parsed = adminOrdersQuery.safeParse(req.query);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_query' });
     const orders = await prisma.webOrder.findMany({
@@ -394,25 +411,25 @@ export async function dianaRoutes(app: FastifyInstance) {
 
   app.post<{ Params: { id: string } }>(
     '/api/diana/admin/orders/:id/confirm',
-    { preHandler: requireAuth },
+    { preHandler: [requireAuth, requireApp('diana')] },
     async (req, reply) =>
       transition(req.params.id, ['submitted'], { status: 'confirmed', confirmedAt: new Date(), confirmedBy: req.agent!.id }, reply),
   );
   app.post<{ Params: { id: string } }>(
     '/api/diana/admin/orders/:id/invoice',
-    { preHandler: requireAuth },
+    { preHandler: [requireAuth, requireApp('diana')] },
     async (req, reply) => transition(req.params.id, ['confirmed'], { status: 'invoiced', invoicedAt: new Date() }, reply),
   );
   app.post<{ Params: { id: string } }>(
     '/api/diana/admin/orders/:id/cancel',
-    { preHandler: requireAuth },
+    { preHandler: [requireAuth, requireApp('diana')] },
     async (req, reply) => transition(req.params.id, ['submitted', 'confirmed'], { status: 'cancelled' }, reply),
   );
 
   // ── STAFF admin: catalog enrichment (brand/category/description editor) ────
   // Search products WITH their current enrichment so staff can fill brand/category/
   // descriptions. Reuses the shared catalog; returns price too (staff-only view).
-  app.get('/api/diana/admin/enrichment', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/api/diana/admin/enrichment', { preHandler: [requireAuth, requireApp('diana')] }, async (req, reply) => {
     const parsed = listQuery.safeParse(req.query);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_query' });
     const { q, brand, category, page, pageSize } = parsed.data;
@@ -440,7 +457,7 @@ export async function dianaRoutes(app: FastifyInstance) {
   });
   app.put<{ Params: { sku: string } }>(
     '/api/diana/admin/enrichment/:sku',
-    { preHandler: requireAuth },
+    { preHandler: [requireAuth, requireApp('diana')] },
     async (req, reply) => {
       const parsed = enrichBody.safeParse(req.body);
       if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });

@@ -1510,6 +1510,8 @@ function GroupTab() {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchNote, setBatchNote] = useState('');
+  // sort order for the open bucket: 'sku' (default) or 'sub' (cluster same ชนิด/subgroup together)
+  const [sortBy, setSortBy] = useState<'sku' | 'sub'>('sku');
   // Anchor row index for shift-click range selection (index into the current `products` order).
   const lastIndexRef = useRef<number | null>(null);
 
@@ -1526,11 +1528,11 @@ function GroupTab() {
   const loadProducts = useCallback(async (bucket: string, query: string) => {
     setProdLoading(true);
     try {
-      const opts = bucket === 'unassigned' ? { filter: 'unassigned' as const, q: query } : { group: bucket, q: query };
-      const r = await getGroupProducts(opts);
+      const base = bucket === 'unassigned' ? { filter: 'unassigned' as const } : { group: bucket };
+      const r = await getGroupProducts({ ...base, q: query, sort: sortBy });
       setProducts(r.products);
     } catch { setProducts([]); } finally { setProdLoading(false); }
-  }, []);
+  }, [sortBy]);
 
   // (re)load the open bucket when it or the (debounced) search changes.
   useEffect(() => {
@@ -1773,6 +1775,17 @@ function GroupTab() {
                 className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
               />
             </div>
+            {sel !== 'unassigned' && (openGroup?.subgroups.length ?? 0) > 0 && (
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as 'sku' | 'sub')}
+                title="เรียงลำดับรายการ"
+                className="shrink-0 px-2 py-2 rounded-xl border border-slate-300 bg-white text-sm text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              >
+                <option value="sku">เรียงตาม: รหัส</option>
+                <option value="sub">เรียงตาม: ชนิด</option>
+              </select>
+            )}
             {products.length > 0 && (
               <button
                 onClick={toggleAll}

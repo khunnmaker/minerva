@@ -323,11 +323,12 @@ export interface GroupProduct {
 export const getGroups = () =>
   authed<{ groups: CatalogGroupInfo[]; total: number; unassigned: number }>('/api/stock/groups');
 
-export const getGroupProducts = (opts: { group?: string; filter?: 'all' | 'unassigned'; q?: string }) => {
+export const getGroupProducts = (opts: { group?: string; filter?: 'all' | 'unassigned'; q?: string; sort?: 'sku' | 'sub' }) => {
   const p = new URLSearchParams();
   if (opts.group) p.set('group', opts.group);
   if (opts.filter) p.set('filter', opts.filter);
   if (opts.q) p.set('q', opts.q);
+  if (opts.sort) p.set('sort', opts.sort);
   return authed<{ products: GroupProduct[] }>(`/api/stock/groups/products?${p.toString()}`);
 };
 

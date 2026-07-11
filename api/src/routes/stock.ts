@@ -582,7 +582,7 @@ export async function stockRoutes(app: FastifyInstance) {
   // GET /api/stock/groups/products?group=&filter=all|unassigned&q=&limit= — products for the
   // review list, each with its current group + alias. group=<key> filters to that group.
   app.get('/api/stock/groups/products', async (req) => {
-    const { group, filter, q, limit } = req.query as { group?: string; filter?: string; q?: string; limit?: string };
+    const { group, filter, q, limit, sort } = req.query as { group?: string; filter?: string; q?: string; limit?: string; sort?: string };
     // Load the whole bucket by default so "select all" in the batch UI really covers everything —
     // the cap sits above the full active catalog (~1187) so even the all-unassigned bucket (before
     // auto-assign) loads completely. The UI still shows a "loaded N of M" warning if it ever caps.
@@ -603,7 +603,12 @@ export async function stockRoutes(app: FastifyInstance) {
       const order = new Map(skus.map((s, i) => [s, i]));
       products.sort((a, b) => (order.get(a.sku) ?? 0) - (order.get(b.sku) ?? 0));
     } else {
-      products = await prisma.product.findMany({ where, orderBy: { sku: 'asc' }, take });
+      // sort=sub clusters same-subgroup (ชนิด) rows together (subgroup asc, nulls last, then SKU);
+      // default is SKU order. Only applies to the browse path — a search keeps its relevance rank.
+      const orderBy = sort === 'sub'
+        ? [{ catalogSubgroup: { sort: 'asc' as const, nulls: 'last' as const } }, { sku: 'asc' as const }]
+        : { sku: 'asc' as const };
+      products = await prisma.product.findMany({ where, orderBy, take });
     }
 
     const aliases = products.length

@@ -8,7 +8,7 @@
 // (it is the current app OR its VITE_<APP>_URL build-time env is set). Until those envs are
 // configured on Railway, only the current app's label shows — fully inert, no visual change.
 import { useEffect, useRef, useState } from 'react';
-import { Bot, Boxes, Wallet, Coins, ShoppingCart, ChevronDown, Users, Globe } from 'lucide-react';
+import { Bot, Boxes, Wallet, Scale, Coins, ShoppingCart, ChevronDown, Users, Globe } from 'lucide-react';
 import { hasAppAccess, type Agent, type AppName } from './lib/api';
 
 const CURRENT: AppName = 'juno';
@@ -24,6 +24,7 @@ const APP_URL = {
   minerva: import.meta.env.VITE_MINERVA_URL ?? 'https://minerva.prominentdental.com',
   vulcan: import.meta.env.VITE_VULCAN_URL ?? 'https://vulcan.prominentdental.com',
   juno: import.meta.env.VITE_JUNO_URL ?? 'https://juno.prominentdental.com',
+  jupiter: import.meta.env.VITE_JUPITER_URL ?? 'https://jupiter.prominentdental.com',
   ceres: import.meta.env.VITE_CERES_URL ?? 'https://ceres.prominentdental.com',
   mercury: import.meta.env.VITE_MERCURY_URL as string | undefined,
 };
@@ -31,17 +32,19 @@ const APPS: { app: AppName; label: string; url: string | undefined }[] = [
   { app: 'minerva', label: 'Minerva', url: APP_URL.minerva },
   { app: 'vulcan', label: 'Vulcan', url: APP_URL.vulcan },
   { app: 'juno', label: 'Juno', url: APP_URL.juno },
+  { app: 'jupiter', label: 'Jupiter', url: APP_URL.jupiter },
   { app: 'ceres', label: 'Ceres', url: APP_URL.ceres },
   { app: 'mercury', label: 'Mercury', url: APP_URL.mercury },
 ];
 
-// Canonical AppName now carries all 7 suite apps (venus, diana included); this Record must
+// Canonical AppName now carries all 8 suite apps (venus, diana included); this Record must
 // enumerate every one. venus/diana have no switcher entry (not in APPS) so their icons are
 // inert placeholders — present only to keep the Record exhaustive.
 const APP_ICON: Record<AppName, typeof Bot> = {
   minerva: Bot,
   vulcan: Boxes,
   juno: Wallet,
+  jupiter: Scale,
   ceres: Coins,
   mercury: ShoppingCart,
   venus: Users,

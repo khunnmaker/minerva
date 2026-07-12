@@ -6,9 +6,8 @@ import {
   ClipboardCheck, Sparkles, Plus, Trash2,
 } from 'lucide-react';
 
-// Portal-back link (Jupiter). URL from build-time env; hidden when unset, so it is completely
-// inert until VITE_PORTAL_URL is configured (Phase 1 go-live / Phase 2 domains).
-const PORTAL_URL: string | undefined = import.meta.env.VITE_PORTAL_URL;
+// Portal-back link uses the canonical Pantheon domain unless build-time env overrides it.
+const PORTAL_URL: string = import.meta.env.VITE_PORTAL_URL ?? 'https://pantheon.prominentdental.com';
 import {
   type Agent, type StockRow, type StockSummary, type StockImportRow,
   type StockAdjustmentRow, type ImportPreview, type ImportPreviewRow,

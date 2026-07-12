@@ -1,20 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, LogOut } from 'lucide-react';
 import Login from './Login';
-import Portal from './Portal';
 import Accounting from './Accounting';
-import { getStoredAgent, getToken, setOnUnauthorized, bootstrap, type Agent } from './lib/api';
-
-// Views inside the authenticated app. 'portal' = the tile home; 'accounting' = the Jupiter
-// accounting cockpit (supervisor-only, opened from the portal). A simple state switch (no
-// router) matching how the app already toggles Login ↔ Portal.
-type View = 'portal' | 'accounting';
+import { getStoredAgent, getToken, setOnUnauthorized, bootstrap, hasAppAccess, logout, type Agent } from './lib/api';
 
 export default function App() {
   const [agent, setAgent] = useState<Agent | null>(() =>
     getToken() ? getStoredAgent() : null,
   );
-  const [view, setView] = useState<View>('portal');
   // Only bootstrap when there's NO local session. If we already have one, this stays false
   // and the portal renders exactly as before (no /me call, no delay).
   const [booting, setBooting] = useState<boolean>(() => !getToken());
@@ -46,15 +39,15 @@ export default function App() {
     );
   }
   if (!agent) return <Login onLogin={setAgent} />;
-  // Accounting is supervisor-only — if a non-supervisor somehow lands here, fall back to the portal.
-  if (view === 'accounting' && agent.role === 'supervisor') {
-    return <Accounting onBack={() => setView('portal')} />;
+  if (!hasAppAccess(agent, 'jupiter')) {
+    return (
+      <div className="min-h-screen bg-violet-50 flex items-center justify-center p-6">
+        <div className="bg-white border border-violet-100 rounded-2xl p-6 text-center shadow-sm">
+          <p className="text-slate-700 mb-4">ไม่มีสิทธิ์เข้าใช้งาน</p>
+          <button onClick={() => { void logout(); setAgent(null); }} className="inline-flex items-center gap-1 text-sm text-violet-700 hover:text-violet-900"><LogOut size={15} /> ออกจากระบบ</button>
+        </div>
+      </div>
+    );
   }
-  return (
-    <Portal
-      agent={agent}
-      onLogout={() => { setView('portal'); setAgent(null); }}
-      onOpenAccounting={agent.role === 'supervisor' ? () => setView('accounting') : undefined}
-    />
-  );
+  return <Accounting onLogout={() => setAgent(null)} />;
 }

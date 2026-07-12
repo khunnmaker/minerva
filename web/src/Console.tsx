@@ -16,9 +16,8 @@ import {
 import { getSocket, disconnectSocket } from './lib/socket';
 import AppSwitcher from './AppSwitcher';
 
-// Portal-back link (Jupiter). URL from build-time env; hidden when unset, so it is completely
-// inert until VITE_PORTAL_URL is configured (Phase 1 go-live / Phase 2 domains).
-const PORTAL_URL: string | undefined = import.meta.env.VITE_PORTAL_URL;
+// Portal-back link uses the canonical Pantheon domain unless build-time env overrides it.
+const PORTAL_URL: string = import.meta.env.VITE_PORTAL_URL ?? 'https://pantheon.prominentdental.com';
 
 // LINE OA account id for the per-customer OA Manager deep-link. The read-sync chip's link uses
 // the OA-native oaChatId (from the extension), so chat.line.biz/{oa}/chat/{oaChatId} now resolves.

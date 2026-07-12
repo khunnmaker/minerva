@@ -24,9 +24,8 @@ import MdTemplates from './MdTemplates';
 import MdRecon from './MdRecon';
 import CeoOverview from './CeoOverview';
 
-// Portal-back link (Jupiter). URL from build-time env; hidden when unset, so it is completely
-// inert until VITE_PORTAL_URL is configured (matches web/vulcan/juno headers).
-const PORTAL_URL: string | undefined = import.meta.env.VITE_PORTAL_URL;
+// Portal-back link uses the canonical Pantheon domain unless build-time env overrides it.
+const PORTAL_URL: string = import.meta.env.VITE_PORTAL_URL ?? 'https://pantheon.prominentdental.com';
 
 type Tab = 'board' | 'approval' | 'money' | 'close' | 'expenses' | 'requests' | 'templates' | 'recon' | 'ceo';
 

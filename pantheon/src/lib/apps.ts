@@ -1,4 +1,4 @@
-import type { Agent, AppName, Badges } from './api';
+import { hasAppAccess, type Agent, type AppName, type Badges } from './api';
 
 // The deities the portal can launch. `url` is a VITE_*_URL env override on top of the canonical
 // *.prominentdental.com subdomain default. That default MUST stay same-site with the api
@@ -28,6 +28,14 @@ export interface AppDef {
 const env = import.meta.env;
 
 export const APPS: AppDef[] = [
+  {
+    key: 'jupiter',
+    name: 'Jupiter',
+    job: 'บัญชี · งบการเงิน',
+    url: env.VITE_JUPITER_URL ?? 'https://jupiter.prominentdental.com',
+    accent: 'text-violet-600',
+    badge: () => null,
+  },
   {
     key: 'minerva',
     name: 'Minerva',
@@ -70,21 +78,10 @@ export const APPS: AppDef[] = [
   },
 ];
 
-// Mirrors api/src/auth/jwt.ts hasAppAccess: supervisor → everything; md → Ceres + Minerva +
-// Juno (MD_APPS on the server — the MD runs expenses, the sales console, and finance);
-// employee → their own per-person `apps` grant. Keep in lock-step with the server so a tile
-// only ever appears when the same account would pass requireApp on that app's routes.
-const MD_APPS: AppName[] = ['ceres', 'minerva', 'juno'];
-export function hasAppAccess(agent: Agent, app: AppName): boolean {
-  if (agent.role === 'supervisor') return true;
-  if (agent.role === 'md') return MD_APPS.includes(app);
-  return (agent.apps ?? []).includes(app);
-}
-
 // Most-used-first display order. The supervisor's day starts in finance (verify slips) then
 // the console, stock, expenses; other accounts see whichever of these they're granted, in the
 // same relative order. Any app missing here sorts last (defensive; all four are listed).
-const ORDER: AppKey[] = ['juno', 'minerva', 'vulcan', 'ceres', 'mercury'];
+const ORDER: AppKey[] = ['juno', 'jupiter', 'minerva', 'vulcan', 'ceres', 'mercury'];
 
 // The tiles this account should see: GRANTED (hasAppAccess) AND has a configured URL, in
 // most-used order. Grant-gated so tiles match the person's badges exactly.

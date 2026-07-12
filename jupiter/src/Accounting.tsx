@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Crown, ArrowLeft, Loader2, Sparkles, Plus, X, Trash2, Users, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
+import { Scale, ArrowLeft, LogOut, Loader2, Sparkles, Plus, X, Trash2, Users, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
 import {
   acctCompanies,
   acctSummary,
@@ -20,7 +20,10 @@ import {
   type Direction,
   type BackfillSummary,
   type BackfillStatus,
+  logout,
 } from './lib/api';
+
+const PORTAL_URL = import.meta.env.VITE_PORTAL_URL ?? 'https://pantheon.prominentdental.com';
 
 // Jupiter accounting cockpit (Phase 1) — the owner's consolidated income/expense view over the
 // 5 group companies + a monthly close pack. Supervisor-only; gated by the caller in App.tsx.
@@ -60,7 +63,7 @@ const toNum = (s: string) => {
 
 type Tab = 'overview' | 'ledger' | 'close';
 
-export default function Accounting({ onBack }: { onBack: () => void }) {
+export default function Accounting({ onLogout }: { onLogout: () => void }) {
   const month = currentMonth();
   const [tab, setTab] = useState<Tab>('overview');
   const [company, setCompany] = useState<string>(ALL); // ALL or a company code
@@ -149,12 +152,12 @@ export default function Accounting({ onBack }: { onBack: () => void }) {
       {/* top bar */}
       <header className="bg-gradient-to-r from-[#4C1D95] to-[#6D28D9] text-white">
         <div className="max-w-4xl mx-auto px-4 sm:px-5 py-3 flex items-center gap-3 flex-wrap">
-          <button onClick={onBack} className="flex items-center gap-1 text-white/85 hover:text-white text-sm">
+          <a href={PORTAL_URL} className="flex items-center gap-1 text-white/85 hover:text-white text-sm">
             <ArrowLeft size={16} /> พอร์ทัล
-          </button>
+          </a>
           <div className="flex items-center gap-2 font-extrabold text-base">
             <span className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center">
-              <Crown size={17} />
+              <Scale size={17} />
             </span>
             <div className="leading-tight">
               Jupiter
@@ -165,6 +168,9 @@ export default function Accounting({ onBack }: { onBack: () => void }) {
           <div className="text-xs sm:text-[12.5px] bg-white/15 rounded-lg px-3 py-1.5 font-semibold">
             รอบเดือน · {thMonthLabel(summary?.month ?? month)}
           </div>
+          <button onClick={() => { void logout(); onLogout(); }} className="flex items-center gap-1 text-white/85 hover:text-white text-sm">
+            <LogOut size={15} /> ออก
+          </button>
         </div>
       </header>
 

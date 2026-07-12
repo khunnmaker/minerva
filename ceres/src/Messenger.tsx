@@ -3,9 +3,8 @@ import { LogOut, Loader2, AlertTriangle, Plus, Pencil, Trash2, CheckCircle2, Cro
 import { listExpenses, deleteExpense, logout as logoutSuite, type Expense, type ExpenseStatus, baht } from './lib/api';
 import { useCeres } from './lib/bootstrapContext';
 
-// Portal-back link (Jupiter). URL from build-time env; hidden when unset, so it is completely
-// inert until VITE_PORTAL_URL is configured (matches web/vulcan/juno headers).
-const PORTAL_URL: string | undefined = import.meta.env.VITE_PORTAL_URL;
+// Portal-back link uses the canonical Pantheon domain unless build-time env overrides it.
+const PORTAL_URL: string = import.meta.env.VITE_PORTAL_URL ?? 'https://pantheon.prominentdental.com';
 import ExpenseSheet from './ExpenseSheet';
 
 const STATUS_META: Record<ExpenseStatus, { label: string; cls: string }> = {

@@ -196,24 +196,40 @@ export default function Login({ onLogin, target }: { onLogin: (agent: Agent) => 
             </div>
 
             {selected.cred === 'password' ? (
-              <>
+              // A real <form> + username/current-password autocomplete so the BROWSER's own
+              // password manager (Chrome/Safari keychain) offers to save and later autofill the
+              // password. We never store credentials ourselves — the sr-only username field just
+              // tells the manager which account the saved password belongs to. PINs stay
+              // one-time-code (below) on purpose: shared-computer PINs must not autofill.
+              <form
+                onSubmit={(e) => { e.preventDefault(); void submit(selected, secret); }}
+              >
+                <input
+                  type="text"
+                  autoComplete="username"
+                  value={selected.email}
+                  readOnly
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  className="sr-only"
+                />
                 <label className="block text-xs font-semibold text-slate-500 mb-1">รหัสผ่าน</label>
                 <input
                   type="password"
                   autoFocus
+                  autoComplete="current-password"
                   value={secret}
                   onChange={(e) => setSecret(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && submit(selected, secret)}
                   className="w-full px-3 py-2 mb-3 rounded-md border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
                 />
                 <button
-                  onClick={() => submit(selected, secret)}
+                  type="submit"
                   disabled={busy || !secret}
                   className="w-full px-3 py-2.5 rounded-md bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold flex items-center justify-center gap-1 disabled:opacity-50"
                 >
                   {busy ? <Loader2 size={16} className="animate-spin" /> : <LogIn size={16} />} เข้าสู่ระบบ
                 </button>
-              </>
+              </form>
             ) : (
               <>
                 <label className="block text-xs font-semibold text-slate-500 mb-1">PIN 6 หลัก</label>

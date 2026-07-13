@@ -157,7 +157,8 @@ function ConfirmButton({ row, onChanged }: { row: DiscrepancyRow; onChanged: () 
 
 function ResolutionDialog({ row, onClose, onChanged }: { row: DiscrepancyRow; onClose: () => void; onChanged: () => void }) {
   const [expected, setExpected] = useState(row.discExpected || String(row.expected));
-  const [resolution, setResolution] = useState<DiscResolution>(row.discResolution);
+  // Owner default (2026-07-12): pre-select the common case — เครดิตรอบหน้า (รอชำระเพิ่ม for ขาด).
+  const [resolution, setResolution] = useState<DiscResolution>(row.discResolution || (row.direction === 'under' ? 'chase' : 'credit'));
   const [note, setNote] = useState(row.discNote);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -194,7 +195,7 @@ export function PaymentDiscrepancyBlock({ payment, isCeo, onUpdated }: { payment
     const canHaveRow = payment.reNumbers.length > 0 || !!payment.discExpected ||
       !!(payment.discResolution || payment.discResolvedAt || payment.discConfirmedAt);
     if (!canHaveRow) { setRow(null); return; }
-    getDiscrepancies().then((result) => { const found = result.rows.find((item) => item.id === payment.id) ?? null; setRow(found); setExpected(payment.discExpected || (found ? String(found.expected) : '')); }).catch(() => setRow(null));
+    getDiscrepancies().then((result) => { const found = result.rows.find((item) => item.id === payment.id) ?? null; setRow(found); setExpected(payment.discExpected || (found ? String(found.expected) : '')); setResolution((prev) => prev || (found?.direction === 'under' ? 'chase' : 'credit')); }).catch(() => setRow(null));
   }, [payment]);
   useEffect(() => { load(); }, [load]);
   const hasStamps = !!(payment.discResolution || payment.discResolvedAt || payment.discConfirmedAt);

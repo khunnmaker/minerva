@@ -1742,8 +1742,10 @@ function useWhtControl(payment: Payment) {
     setAmountStr(String(round2((payment.amountNum * next) / (100 - next))));
   }
 
-  // Full price / RE = what was received + what was withheld.
-  const grossPreview = round2(payment.amountNum + (parseFloat(amountStr) || 0));
+  // Full price / RE = what was received + what was withheld. Follows the checkbox: while WHT is
+  // off, the kept-but-hidden baht (see toggleOn) must not inflate this — the ยอดตาม RE diff
+  // preview reads it even when the WHT section is collapsed.
+  const grossPreview = round2(payment.amountNum + (on ? parseFloat(amountStr) || 0 : 0));
 
   // Re-seed every field from a (possibly different) payment — used by CheckDialog when it
   // re-opens on a different row, and would be used by a batch queue's goTo() if one existed.

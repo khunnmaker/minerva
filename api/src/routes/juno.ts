@@ -11,7 +11,7 @@ import type { BankSource, ParsedBankRow } from '../bank/types.js';
 import { BankParseError } from '../bank/types.js';
 import { readStaffUploadFile, readStaffUploadMeta, UPLOAD_ID_RE } from '../line/staffUploads.js';
 import { syncPaymentToJupiter } from '../jupiter/sync.js';
-import { readSlipFromBuffer } from '../llm/readSlip.js';
+import { readChequeFromBuffer, readSlipFromBuffer } from '../llm/readSlip.js';
 import { parseReReceipts, decodeExpressBytes } from '../finance/parseReReceipts.js';
 import { computeReRow } from '../finance/reRecon.js';
 import {
@@ -828,6 +828,25 @@ export async function junoRoutes(app: FastifyInstance) {
       transferAt: fields.transferAt,
       ref: fields.ref,
       senderName: fields.senderName,
+    };
+  });
+
+  app.post('/api/juno/read-cheque', async (req, reply) => {
+    const body = readSlipBodySchema.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
+    if (!UPLOAD_ID_RE.test(body.data.uploadId)) return reply.code(400).send({ error: 'invalid_upload_id' });
+
+    const buf = await readStaffUploadFile(body.data.uploadId);
+    if (!buf) return reply.code(404).send({ error: 'not_found' });
+    const meta = await readStaffUploadMeta(body.data.uploadId);
+    const contentType = meta?.contentType || 'image/jpeg';
+
+    const fields = await readChequeFromBuffer(buf, contentType);
+    return {
+      chequeNo: fields.chequeNo,
+      chequeBank: fields.chequeBank,
+      chequeDueDate: fields.chequeDueDate,
+      amount: fields.amount,
     };
   });
 

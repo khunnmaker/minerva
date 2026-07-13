@@ -10,7 +10,7 @@ import {
 const PORTAL_URL: string = import.meta.env.VITE_PORTAL_URL ?? 'https://pantheon.prominentdental.com';
 import {
   getSummary, getPayments, setStatus, setFlag, verifyPayment, getReport, downloadCsv, baht,
-  logout, getBankSummary, createPayment, settlePayment, uploadSlip, fileToBase64, readManualSlip,
+  logout, getBankSummary, createPayment, settlePayment, uploadSlip, fileToBase64, readManualSlip, readManualCheque,
   deletePayment, confirmReceived, getWhtSummary, updatePayment, getFinanceAudits,
   type Agent, type Payment, type PaymentStatus, type Summary,
   type Report, type PaymentFilter, type CustomerType, type PaymentSource, type SettleState,
@@ -752,6 +752,10 @@ function AddPaymentModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
   const [chequeNo, setChequeNo] = useState('');
   const [chequeBank, setChequeBank] = useState('');
   const [chequeDueDate, setChequeDueDate] = useState('');
+  const [chequeUrl, setChequeUrl] = useState('');
+  const [chequeName, setChequeName] = useState('');
+  const [uploadingCheque, setUploadingCheque] = useState(false);
+  const [readingCheque, setReadingCheque] = useState(false);
 
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
@@ -799,6 +803,38 @@ function AddPaymentModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
     }
   }
 
+  async function pickCheque(file: File | undefined) {
+    if (!file) return;
+    setUploadingCheque(true);
+    setErr('');
+    try {
+      const b64 = await fileToBase64(file);
+      const { uploadId, url } = await uploadSlip(b64, file.name);
+      setChequeUrl(url);
+      setChequeName(file.name);
+      setUploadingCheque(false);
+
+      setReadingCheque(true);
+      try {
+        const fields = await readManualCheque(uploadId);
+        if (!liveRef.current) return;
+        setChequeNo((v) => v || fields.chequeNo);
+        setChequeBank((v) => v || fields.chequeBank);
+        setChequeDueDate((v) => v || fields.chequeDueDate);
+        setAmount((v) => v || fields.amount);
+      } catch {
+        // silent — OCR is a convenience, not a requirement
+      } finally {
+        if (liveRef.current) setReadingCheque(false);
+      }
+    } catch {
+      if (liveRef.current) {
+        setErr('แนบรูปเช็คไม่สำเร็จ — ลองใหม่อีกครั้ง');
+        setUploadingCheque(false);
+      }
+    }
+  }
+
   async function save() {
     if (!valid || saving) return;
     setSaving(true);
@@ -825,6 +861,7 @@ function AddPaymentModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
               chequeNo: chequeNo.trim() || undefined,
               chequeBank: chequeBank.trim() || undefined,
               chequeDueDate: chequeDueDate.trim() || undefined,
+              slipUrl: chequeUrl || undefined,
             }
           : {}),
       });
@@ -921,6 +958,22 @@ function AddPaymentModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
           </>
         ) : (
           <>
+            {method === 'cheque' && (
+              <label className="flex items-center justify-center gap-2 w-full px-3 py-2.5 rounded-lg border-2 border-dashed border-emerald-300 bg-emerald-50/50 text-sm font-medium text-emerald-700 hover:bg-emerald-50 cursor-pointer disabled:opacity-50">
+                {readingCheque ? (
+                  <><Loader2 size={16} className="animate-spin" /> กำลังอ่านเช็ค…</>
+                ) : uploadingCheque ? (
+                  <><Loader2 size={16} className="animate-spin" /> กำลังอัปโหลด…</>
+                ) : chequeUrl ? (
+                  <><Check size={16} /> แนบแล้ว: {chequeName || 'รูปเช็ค'} — แตะเพื่อแนบใหม่</>
+                ) : (
+                  <><Paperclip size={16} /> แนบรูปเช็ค</>
+                )}
+                <input type="file" accept="image/*" className="hidden" disabled={uploadingCheque || readingCheque}
+                  onChange={(e) => void pickCheque(e.target.files?.[0])} />
+              </label>
+            )}
+
             {/* common fields (เงินสด / เช็คธนาคาร — unchanged from before) */}
             <div className="grid grid-cols-2 gap-2">
               <label className="block">

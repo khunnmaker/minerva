@@ -377,6 +377,18 @@ export const readManualSlip = (uploadId: string) =>
     body: JSON.stringify({ uploadId }),
   });
 
+export interface ManualChequeFields {
+  chequeNo: string;
+  chequeBank: string;
+  chequeDueDate: string;
+  amount: string;
+}
+export const readManualCheque = (uploadId: string) =>
+  authed<ManualChequeFields>('/api/juno/read-cheque', {
+    method: 'POST',
+    body: JSON.stringify({ uploadId }),
+  });
+
 // Withholding tax (หัก ณ ที่จ่าย, task 2) rate options — mirrors the server's WHT_RATES
 // (api/src/routes/juno.ts). 0 = ไม่มี (no WHT).
 export type WhtRate = 0 | 1 | 2 | 3 | 5;

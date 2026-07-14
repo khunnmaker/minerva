@@ -17,3 +17,13 @@ export interface Task {
   comments?: Comment[]; attachments?: Attachment[]; _count?: { comments: number; attachments: number };
 }
 export interface TaskInput { projectId?: string; title: string; notes?: string; assigneeId?: string | null; dueDate: string; priority?: Priority; status?: string; customerRef?: string | null; recurrenceRule?: RecurrenceRule | null }
+
+// Narrow structural shape TaskCard actually reads — lets it accept both full Task objects
+// (Board/List/MyTasks) and the calendar endpoint's leaner rows without either side casting.
+export type TaskCardTask = Pick<Task, 'id' | 'title' | 'priority' | 'dueDate' | 'recurrenceRule' | 'customerRef' | 'assignee' | '_count'> & { project?: Pick<Project, 'name' | 'color'> };
+// Row shape returned by GET /api/apollo/calendar (see api/src/routes/apollo.ts calendarTaskSelect).
+export interface CalendarTask {
+  id: string; title: string; dueDate: string; priority: Priority; status: string;
+  recurrenceRule: RecurrenceRule | null; customerRef: string | null;
+  project: Pick<Project, 'id' | 'name' | 'color' | 'archived'>; assignee: Person | null;
+}

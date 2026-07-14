@@ -1,11 +1,13 @@
 import type { DragEvent } from 'react';
 import { CalendarDays, MessageSquare, Paperclip, RefreshCw, Tag, UserPlus } from 'lucide-react';
 import { PRIORITY_META, agentAvatar, dueClass, shortDate, type ColumnAccent } from './lib/ui';
-import type { Person, Task } from './types';
+import type { Person, TaskCardTask } from './types';
 
-// Shared task card — used by the Board columns and My Tasks buckets so the two never drift apart.
+// Shared task card — used by the Board columns, My Tasks buckets, and the calendar's day
+// modal/agenda so none of them drift apart. Takes TaskCardTask (a narrow Pick<Task, ...>) so
+// callers with a leaner row shape (e.g. the calendar endpoint) can pass it straight through.
 export default function TaskCard({ task, agents, accent, showProject, dragging, draggable, onClick, onDragStart, onDragEnd, onDragOver, onDrop }: {
-  task: Task; agents: Person[]; accent?: ColumnAccent; showProject?: boolean; dragging?: boolean; onClick?: () => void;
+  task: TaskCardTask; agents: Person[]; accent?: ColumnAccent; showProject?: boolean; dragging?: boolean; onClick?: () => void;
   draggable?: boolean; onDragStart?: () => void; onDragEnd?: () => void; onDragOver?: (e: DragEvent<HTMLElement>) => void; onDrop?: (e: DragEvent<HTMLElement>) => void;
 }) {
   const meta = PRIORITY_META[task.priority]; const PriorityIcon = meta.icon;

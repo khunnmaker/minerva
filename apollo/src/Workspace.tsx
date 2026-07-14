@@ -3,11 +3,12 @@ import { AlertTriangle, BarChart3, CalendarCheck, CalendarDays, CheckSquare, Clo
 import AppSwitcher from './AppSwitcher';
 import TaskModal from './TaskModal';
 import TaskCard from './TaskCard';
+import CalendarView from './CalendarView';
 import type { Agent, Person, Priority, Project, Task } from './types';
 import { createProject, generateLineBind, getAgents, getDashboard, getLineBind, getMyTasks, getProject, getProjects, logout, moveTask, updateColumns, updateMembers, updateProject } from './lib/api';
 import { PRIORITY_META, accentForColumn, agentAvatar, dueClass, shortDate } from './lib/ui';
 
-type View = 'board' | 'list' | 'mine' | 'dashboard' | 'settings';
+type View = 'board' | 'list' | 'mine' | 'calendar' | 'dashboard' | 'settings';
 const priorityRank: Record<Priority, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
 const deepTaskId = () => /^\/t\/([^/]+)$/.exec(location.pathname)?.[1] ?? null;
 const PROJECT_COLORS = ['#4f46e5', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#64748b'];
@@ -37,7 +38,8 @@ export default function Workspace({ agent, onLogout }: { agent: Agent; onLogout:
 
   const nav: { key: View; label: string; icon: typeof Kanban; manager?: boolean }[] = [
     { key: 'board', label: 'บอร์ด', icon: Kanban }, { key: 'list', label: 'รายการ', icon: List },
-    { key: 'mine', label: 'งานของฉัน', icon: CheckSquare }, { key: 'dashboard', label: 'ภาพรวม', icon: BarChart3, manager: true },
+    { key: 'mine', label: 'งานของฉัน', icon: CheckSquare }, { key: 'calendar', label: 'ปฏิทิน', icon: CalendarDays },
+    { key: 'dashboard', label: 'ภาพรวม', icon: BarChart3, manager: true },
     { key: 'settings', label: 'ตั้งค่า', icon: Settings },
   ];
   return <div className="min-h-screen bg-slate-50">
@@ -60,6 +62,7 @@ export default function Workspace({ agent, onLogout }: { agent: Agent; onLogout:
           : view === 'board' ? <Board project={project} agents={agents} isManager={isManager} onOpen={openTask} onMoved={() => void loadProject()} onNewTask={(status) => newTask(status)} onNewProject={() => setNewProjectOpen(true)}/>
           : view === 'list' ? <TaskList project={project} agents={agents} onOpen={openTask}/>
           : view === 'mine' ? <MyTasks agents={agents} onOpen={openTask}/>
+          : view === 'calendar' ? <CalendarView agents={agents} me={agent} isManager={isManager} onOpen={openTask}/>
           : view === 'dashboard' && isManager ? <Dashboard agents={agents}/> : <LineSettings/>}
       </main>
     </div>

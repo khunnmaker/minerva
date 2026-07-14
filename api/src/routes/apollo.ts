@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { prisma } from '../db/prisma.js';
 import { requireAuth, requireApp } from '../auth/middleware.js';
 import { completeApolloTask, parseRecurrenceRule } from '../apollo/recurrence.js';
+import { CALENDAR_MAX_RANGE_DAYS, dateSchema, parseCalendarRange, parseDate, resolveCalendarAssignee } from '../apollo/calendarQuery.js';
 import { notifyApolloAssignment, thaiDateKey } from '../apollo/notify.js';
 import { deleteApolloAttachment, readApolloAttachment, saveApolloAttachment } from '../apollo/attachmentStore.js';
 import { EMPLOYEES, TIER_ACCOUNTS, employeeEmail } from '../db/ensureSeeded.js';
@@ -22,7 +23,6 @@ const recurrenceSchema = z.discriminatedUnion('freq', [
   z.object({ freq: z.literal('weekly'), weekday: z.number().int().min(0).max(6) }),
   z.object({ freq: z.literal('monthly'), dayOfMonth: z.number().int().min(1).max(31) }),
 ]);
-const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const taskBody = z.object({
   title: z.string().trim().min(1).max(300),
   notes: z.string().max(20_000).optional(),
@@ -42,14 +42,15 @@ const taskInclude = {
   comments: { include: { author: { select: peopleSelect } }, orderBy: { createdAt: 'asc' as const } },
   attachments: { include: { uploadedBy: { select: peopleSelect } }, orderBy: { createdAt: 'asc' as const } },
 } as const;
+// Lean projection for the calendar grid — no comments/attachments, just what a day cell renders.
+const calendarTaskSelect = {
+  id: true, title: true, dueDate: true, priority: true, status: true, recurrenceRule: true, customerRef: true,
+  project: { select: { id: true, name: true, color: true, archived: true } },
+  assignee: { select: peopleSelect },
+} as const;
 
 function manager(req: FastifyRequest): boolean {
   return req.agent?.role === 'supervisor' || req.agent?.role === 'md';
-}
-
-function parseDate(value: string): Date | null {
-  const d = new Date(`${value}T00:00:00.000Z`);
-  return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== value ? null : d;
 }
 
 async function projectMember(projectId: string, agentId: string): Promise<boolean> {
@@ -347,6 +348,28 @@ export async function apolloRoutes(app: FastifyInstance) {
       today: tasks.filter((t) => t.dueDate.toISOString().slice(0, 10) === today),
       upcoming: tasks.filter((t) => t.dueDate.toISOString().slice(0, 10) > today),
     };
+  });
+
+  const calendarQuerySchema = z.object({ from: dateSchema, to: dateSchema, assignee: z.string().trim().min(1).max(80).optional() });
+  app.get('/api/apollo/calendar', async (req, reply) => {
+    const parsed = calendarQuerySchema.safeParse(req.query ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_query' });
+    const range = parseCalendarRange(parsed.data.from, parsed.data.to);
+    if (!range) return reply.code(400).send({ error: `invalid_range_or_exceeds_${CALENDAR_MAX_RANGE_DAYS}_days` });
+    // Server-side force: employees always get their own id, never trusting the query param.
+    const assigneeId = resolveCalendarAssignee(manager(req), req.agent!.id, parsed.data.assignee);
+    const tasks = await prisma.apolloTask.findMany({
+      where: {
+        completedAt: null,
+        dueDate: { gte: range.from, lte: range.to },
+        project: { archived: false },
+        ...(assigneeId === undefined ? {} : { assigneeId }),
+      },
+      select: calendarTaskSelect,
+      orderBy: { dueDate: 'asc' },
+      take: 500,
+    });
+    return { tasks };
   });
 
   app.get('/api/apollo/dashboard', async (req, reply) => {

@@ -47,3 +47,21 @@ export function genderOf(id: string | null | undefined, agents: Person[]): 'male
 export function agentAvatar(person: Pick<Person, 'id' | 'email'>, agents: Person[]): string {
   return memberAvatar(person.email, genderOf(person.id, agents));
 }
+
+// Calendar month math — manual y/m/d string building (never toISOString) so the grid and its
+// API range never drift a day off the browser's local timezone offset.
+export function pad2(n: number): string { return String(n).padStart(2, '0'); }
+export function dateKey(year: number, month: number, day: number): string { return `${year}-${pad2(month + 1)}-${pad2(day)}`; }
+export function daysInMonth(year: number, month: number): number { return new Date(year, month + 1, 0).getDate(); }
+
+export interface CalendarCell { year: number; month: number; day: number; inMonth: boolean }
+// Full Sunday-first 7-column grid for a month, including the leading/trailing days that pad
+// the first and last week out from the neighboring months.
+export function monthGrid(year: number, month: number): CalendarCell[] {
+  const startWeekday = new Date(year, month, 1).getDay();
+  const total = Math.ceil((startWeekday + daysInMonth(year, month)) / 7) * 7;
+  return Array.from({ length: total }, (_, i) => {
+    const d = new Date(year, month, 1 - startWeekday + i);
+    return { year: d.getFullYear(), month: d.getMonth(), day: d.getDate(), inMonth: d.getMonth() === month && d.getFullYear() === year };
+  });
+}

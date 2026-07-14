@@ -166,13 +166,16 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
           ],
         },
         {
-          caption: 'ขั้น 3–4 · จับคู่+ยืนยัน',
+          // The caption carries "กระทบยอด", so the two recon tabs keep SHORT names — the
+          // long กระทบยอดธนาคาร/กระทบยอด RE labels overflowed the bar into a horizontal
+          // scrollbar the owner disliked (2026-07-14).
+          caption: 'ขั้น 3–4 · จับคู่+ยืนยัน (กระทบยอด)',
           tabs: [
             // เงินสด/เช็ค is CEO-only: it's where the CEO marks ได้รับเงินแล้ว (server 403s
             // POST /receive for non-supervisor). Badge = still awaiting that confirm.
             ...(isCeo ? [{ key: 'receive' as const, label: 'เงินสด/เช็ค', icon: <HandCoins size={16} />, count: summary?.awaitingReceive }] : []),
-            { key: 'recon' as const, label: 'กระทบยอดธนาคาร', icon: <Scale size={16} />, count: bankUnmatched },
-            { key: 'reRecon' as const, label: 'กระทบยอด RE', icon: <FileCheck size={16} /> },
+            { key: 'recon' as const, label: 'ธนาคาร', icon: <Scale size={16} />, count: bankUnmatched },
+            { key: 'reRecon' as const, label: 'Express RE', icon: <FileCheck size={16} /> },
           ],
         },
         {
@@ -216,17 +219,19 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
           </div>
         </div>
         {/* Height budget: caption 13px + py-1.5 buttons keeps the header at ~104px total, so
-            the drawers' sticky md:top-[104px] (Detail, BillDrawer) still clears exactly. */}
-        <div className="max-w-7xl mx-auto px-4 flex gap-3 overflow-x-auto">
+            the drawers' sticky md:top-[104px] (Detail, BillDrawer) still clears exactly.
+            The scrollbar strip is hidden (owner dislike) — when a narrow window does overflow,
+            the row still pans by wheel/trackpad/touch, just without the bar. */}
+        <div className="max-w-7xl mx-auto px-4 flex gap-2 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
           {tabGroups.map((group, index) => (
-            <div key={group.caption} className={`flex flex-col shrink-0 ${index > 0 ? 'border-l border-slate-200 pl-3' : ''}`}>
+            <div key={group.caption} className={`flex flex-col shrink-0 ${index > 0 ? 'border-l border-slate-200 pl-2' : ''}`}>
               <div className="text-[10px] leading-[13px] text-slate-400 whitespace-nowrap select-none">{group.caption}</div>
               <div className="flex gap-1">
                 {group.tabs.map((t) => (
                   <button
                     key={t.key}
                     onClick={() => setView(t.key)}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border-b-2 whitespace-nowrap ${
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 text-sm font-medium border-b-2 whitespace-nowrap ${
                       view === t.key ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-slate-500 hover:text-slate-700'
                     }`}
                   >

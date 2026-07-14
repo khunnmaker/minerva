@@ -1603,6 +1603,143 @@ export async function junoRoutes(app: FastifyInstance) {
     };
   });
 
+  const paymentsReconQuerySchema = z.object({
+    state: z.enum(['pending', 'matched']).optional(),
+    q: z.string().max(120).optional(),
+    limit: z.coerce.number().int().min(1).max(500).optional(),
+  });
+  app.get('/api/juno/payments-recon', async (req, reply) => {
+    const parsed = paymentsReconQuerySchema.safeParse(req.query ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_query' });
+    const { state = 'pending', limit = 100 } = parsed.data;
+    const where: Record<string, unknown> = state === 'pending'
+      ? { status: 'verified', reconciled: false, source: { not: 'cash' } }
+      : { reconciled: true, status: { in: ['verified', 'recorded'] } };
+    const term = parsed.data.q?.trim();
+    if (term) {
+      where.OR = [
+        { reNumber: { contains: term, mode: 'insensitive' } },
+        { receiptName: { contains: term, mode: 'insensitive' } },
+        { customerName: { contains: term, mode: 'insensitive' } },
+        { senderName: { contains: term, mode: 'insensitive' } },
+        { amount: { contains: term } },
+      ];
+    }
+
+    const payments = await prisma.payment.findMany({
+      where,
+      orderBy: { createdAt: state === 'pending' ? 'asc' : 'desc' },
+      take: limit,
+    });
+    const links = await prisma.paymentBankMatch.findMany({
+      where: { paymentId: { in: payments.map((p) => p.id) } },
+      select: {
+        paymentId: true,
+        bankTxn: { select: { id: true, txnAt: true, amount: true, channel: true, payerName: true, expressConfirmedAt: true } },
+      },
+    });
+    const byPayment = new Map<string, typeof links>();
+    for (const link of links) byPayment.set(link.paymentId, [...(byPayment.get(link.paymentId) ?? []), link]);
+
+    return {
+      payments: payments.map((p) => ({
+        ...toRow(p),
+        linkedTxns: (byPayment.get(p.id) ?? []).map((l) => ({
+          bankTxnId: l.bankTxn.id,
+          txnAt: l.bankTxn.txnAt.toISOString(),
+          amount: l.bankTxn.amount,
+          channel: l.bankTxn.channel,
+          payerName: l.bankTxn.payerName,
+          expressConfirmedAt: l.bankTxn.expressConfirmedAt?.toISOString() ?? null,
+        })),
+      })),
+    };
+  });
+
+  app.get<{ Params: { id: string } }>('/api/juno/payments/:id/txn-suggestions', async (req, reply) => {
+    const payment = await prisma.payment.findUnique({ where: { id: req.params.id } });
+    if (!payment) return reply.code(404).send({ error: 'not_found' });
+
+    const linked = await prisma.paymentBankMatch.findMany({ where: { paymentId: payment.id }, select: { bankTxnId: true } });
+    const candidates = await prisma.bankTxn.findMany({
+      where: {
+        direction: 'in',
+        expressConfirmedAt: null,
+        id: { notIn: linked.map((l) => l.bankTxnId) },
+      },
+      orderBy: { txnAt: 'desc' },
+      take: 500,
+    });
+    const linkedCounts = candidates.length ? await prisma.paymentBankMatch.groupBy({
+      by: ['bankTxnId'],
+      where: { bankTxnId: { in: candidates.map((t) => t.id) } },
+      _count: { _all: true },
+    }) : [];
+    const countByTxn = new Map(linkedCounts.map((row) => [row.bankTxnId, row._count._all]));
+
+    const paymentAt = paymentTimestamp(payment.transferAt, payment.createdAt);
+    const paymentAmount = txnAmountNum(payment.amount);
+    const scored = candidates.map((txn) => {
+      const days = dayDistance(txn.txnAt, paymentAt);
+      const exact = amountsEqual(txn.amount, payment.amount);
+      const nameScore = Math.max(
+        nameSimilarity(txn.payerName || txn.details, payment.senderName || payment.customerName),
+        nameSimilarity(txn.payerName || txn.details, payment.receiptName),
+      );
+      const delta = Math.abs(txnAmountNum(txn.amount) - paymentAmount);
+      let score = 0;
+      if (exact) score = 3000 - days;
+      else if (nameScore > 0.3) score = 2000 + nameScore * 100 - days;
+      else if (days < 1 && delta <= Math.max(1, paymentAmount * 0.02)) score = 1000 - delta;
+      else score = -1;
+      return { txn, days, exact, nameScore, score };
+    }).filter((candidate) => candidate.score > -1);
+    scored.sort((a, b) => b.score - a.score);
+
+    return {
+      suggestions: scored.slice(0, 10).map(({ txn, days, exact, nameScore }) => ({
+        bankTxnId: txn.id,
+        txnAt: txn.txnAt.toISOString(),
+        amount: txn.amount,
+        channel: txn.channel,
+        payerName: txn.payerName,
+        details: txn.details,
+        matchStatus: txn.matchStatus,
+        linkedCount: countByTxn.get(txn.id) ?? 0,
+        exactAmount: exact,
+        dayDistance: Number(days.toFixed(2)),
+        nameScore: Number(nameScore.toFixed(2)),
+      })),
+    };
+  });
+
+  app.post<{ Params: { id: string } }>('/api/juno/payments/:id/match', async (req, reply) => {
+    const body = z.object({ bankTxnIds: z.array(z.string().min(1)).min(1).max(20) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
+
+    const payment = await prisma.payment.findUnique({ where: { id: req.params.id }, select: { id: true, amount: true } });
+    if (!payment) return reply.code(404).send({ error: 'not_found' });
+
+    const bankTxnIds = [...new Set(body.data.bankTxnIds)];
+    const txns = await prisma.bankTxn.findMany({ where: { id: { in: bankTxnIds }, direction: 'in' }, select: { id: true } });
+    if (txns.length !== bankTxnIds.length) return reply.code(400).send({ error: 'unknown_txn' });
+
+    await prisma.paymentBankMatch.createMany({
+      data: bankTxnIds.map((bankTxnId) => ({ paymentId: payment.id, bankTxnId, createdById: req.agent?.id ?? null })),
+      skipDuplicates: true,
+    });
+    await recomputePaymentReconciled(payment.id);
+    await Promise.all(bankTxnIds.map(recomputeTxnMatchStatus));
+
+    const allLinks = await prisma.paymentBankMatch.findMany({
+      where: { paymentId: payment.id },
+      select: { bankTxn: { select: { amount: true } } },
+    });
+    const linkedSum = Number(allLinks.reduce((sum, link) => sum + txnAmountNum(link.bankTxn.amount), 0).toFixed(2));
+    const sumDelta = Number((linkedSum - txnAmountNum(payment.amount)).toFixed(2));
+    return { ok: true, linkedSum, sumDelta };
+  });
+
   // GET /api/juno/bank/txns/:id/suggestions — ranked candidate payments for the จับคู่ panel.
   // Exact-amount first (by day distance), then name-similarity, then same-day ± small delta.
   app.get<{ Params: { id: string } }>('/api/juno/bank/txns/:id/suggestions', async (req, reply) => {

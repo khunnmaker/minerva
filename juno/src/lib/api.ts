@@ -599,6 +599,33 @@ export interface BankSuggestion {
   nameScore: number;
 }
 
+export type PaymentReconState = 'pending' | 'matched';
+
+export interface PaymentReconLinkedTxn {
+  bankTxnId: string;
+  txnAt: string;
+  amount: string;
+  channel: string;
+  payerName: string;
+  expressConfirmedAt: string | null;
+}
+
+export type PaymentReconRow = Payment & { linkedTxns: PaymentReconLinkedTxn[] };
+
+export interface TxnSuggestion {
+  bankTxnId: string;
+  txnAt: string;
+  amount: string;
+  channel: string;
+  payerName: string;
+  details: string;
+  matchStatus: BankMatchStatus;
+  linkedCount: number;
+  exactAmount: boolean;
+  dayDistance: number;
+  nameScore: number;
+}
+
 export interface BankSummary {
   unmatchedIn: { count: number; sum: number };
   matchedUnconfirmed: { count: number; sum: number };
@@ -659,6 +686,22 @@ export const getBankTxns = (f: BankTxnFilter) =>
 
 export const getBankSuggestions = (txnId: string) =>
   authed<{ suggestions: BankSuggestion[] }>(`/api/juno/bank/txns/${txnId}/suggestions`);
+
+export const getPaymentsRecon = (state: PaymentReconState = 'pending', q?: string, limit?: number) => {
+  const p = new URLSearchParams({ state });
+  if (q) p.set('q', q);
+  if (limit) p.set('limit', String(limit));
+  return authed<{ payments: PaymentReconRow[] }>(`/api/juno/payments-recon?${p.toString()}`);
+};
+
+export const getPaymentTxnSuggestions = (paymentId: string) =>
+  authed<{ suggestions: TxnSuggestion[] }>(`/api/juno/payments/${paymentId}/txn-suggestions`);
+
+export const matchPaymentTxns = (paymentId: string, bankTxnIds: string[]) =>
+  authed<{ ok: boolean; linkedSum: number; sumDelta: number }>(`/api/juno/payments/${paymentId}/match`, {
+    method: 'POST',
+    body: JSON.stringify({ bankTxnIds }),
+  });
 
 export const matchBankTxn = (txnId: string, paymentIds: string[]) =>
   authed<{ ok: boolean; sumDelta: number }>(`/api/juno/bank/txns/${txnId}/match`, {

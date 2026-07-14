@@ -13,9 +13,22 @@ import { embeddingsAvailable, embedMessage, embedOne, retrieveSimilarMessages } 
 import { selectRelevantKb } from '../memory/kbRetrieval.js';
 import { collectBurstImages, renderBurstQuestion } from './draftImages.js';
 import { runVisionPasses } from './visionDraft.js';
+import {
+  collectProductPhotoSkus,
+  productNamesByPhotoSku,
+  renderHistoryLine,
+  selectCandidateSkus,
+  selectShownProducts,
+} from './draftContext.js';
 
-const histLine = (role: string, text: string, attachmentType?: string | null, aiCaption?: string | null) =>
-  `${role === 'customer' ? 'ลูกค้า' : 'ร้าน'}: ${attachmentType === 'image' && aiCaption ? `[รูปภาพ: ${aiCaption}]` : text}`;
+const histLine = (
+  role: string,
+  text: string,
+  attachmentType?: string | null,
+  aiCaption?: string | null,
+  attachmentRef?: string | null,
+  productNames?: ReadonlyMap<string, string>,
+) => renderHistoryLine({ role, text, attachmentType, aiCaption, attachmentRef }, productNames);
 
 // Resolve SKUs (staff-chosen cross-sell / confirmed products) to the ProductMatch shape.
 async function resolveProducts(skus?: string[]): Promise<ProductMatch[]> {
@@ -70,9 +83,22 @@ export async function generateDraftForMessage(
     orderBy: { createdAt: 'desc' },
     take: env.RECENT_WINDOW,
   });
-  const recentWindow = recentRows
+  const productPhotoSkus = collectProductPhotoSkus(recentRows);
+  const recentProductRows = productPhotoSkus.length
+    ? await prisma.product.findMany({ where: { photoSku: { in: productPhotoSkus } } })
+    : [];
+  const recentProductNames = productNamesByPhotoSku(recentProductRows);
+  const shownProducts = selectShownProducts(recentRows, recentProductRows);
+  const recentWindow = [...recentRows]
     .reverse()
-    .map((m) => histLine(m.role, m.text, m.attachmentType, m.aiCaption))
+    .map((m) => histLine(
+      m.role,
+      m.text,
+      m.attachmentType,
+      m.aiCaption,
+      m.attachmentRef,
+      recentProductNames,
+    ))
     .join('\n');
 
   // Long-term memory (M3 layer 1) — updated on session end.
@@ -151,7 +177,8 @@ export async function generateDraftForMessage(
   // stock are trusted grounding (still numbers-confirmed at send time).
   const recentCustomerText = recentRows
     .filter((m) => m.role === 'customer')
-    .slice(-5)
+    .slice(0, 5)
+    .reverse()
     .map((m) => m.text)
     .join(' ');
   let products = burstText
@@ -180,6 +207,7 @@ export async function generateDraftForMessage(
           recentWindow,
           summary,
           retrievedMessages,
+          shownProducts,
           suggestProducts,
           confirmedProducts,
           currentStage,
@@ -200,6 +228,7 @@ export async function generateDraftForMessage(
         summary,
         retrievedMessages,
         products,
+        shownProducts,
         suggestProducts,
         confirmedProducts,
         currentStage,
@@ -222,7 +251,7 @@ export async function generateDraftForMessage(
     }));
   }
 
-  const groundedProducts = [...products, ...suggestProducts, ...confirmedProducts];
+  const groundedProducts = [...products, ...shownProducts, ...suggestProducts, ...confirmedProducts];
   const groundedPriceText = groundedProducts
     .filter((p) => p.price > 0)
     .map((p) => `${p.price}บาท`)
@@ -262,11 +291,12 @@ export async function generateDraftForMessage(
   } else {
     // Candidate photos for staff to choose from when the match is uncertain — the
     // matched products that actually have a photo (the AI's pick is among them).
-    candidateSkus = products.filter((p) => p.photoSku).slice(0, 6).map((p) => p.sku);
+    const shownSkus = new Set(shownProducts.map((p) => p.sku));
+    candidateSkus = selectCandidateSkus(products, shownSkus);
     // Cross-sell: learned-good pairings (from past staff choices) first, then fresh
     // AI suggestions — excluding the direct matches and demoted pairings. Targets ~5.
     const anchorSku = productSku ?? candidateSkus[0] ?? null;
-    const excludeSkus = new Set([...products.map((p) => p.sku), ...candidateSkus]);
+    const excludeSkus = new Set([...products.map((p) => p.sku), ...shownSkus, ...candidateSkus]);
     crossSellSkus = await buildCrossSell(anchorSku, result.cross_sell_terms ?? [], excludeSkus);
   }
 

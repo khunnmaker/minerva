@@ -34,6 +34,7 @@ export async function runVisionPasses(
     const searched = await findProducts(result.product_search_terms.join(' '));
     const injectedSkus = new Set([
       ...products,
+      ...(context.shownProducts ?? []),
       ...(context.suggestProducts ?? []),
       ...(context.confirmedProducts ?? []),
     ].map((product) => product.sku));

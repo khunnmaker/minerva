@@ -8,6 +8,7 @@ export interface PromptContext {
   summary?: string; // long-term memory (M3)
   retrievedMessages?: string; // retrieval (M3)
   products?: ProductMatch[]; // catalog matches for the question (M4)
+  shownProducts?: ProductMatch[]; // products whose photos the staff recently sent to this customer
   suggestProducts?: ProductMatch[]; // cross-sell products the staff chose to upsell (mention these)
   confirmedProducts?: ProductMatch[]; // products staff manually identified as the answer (e.g. from an image the AI couldn't read) — write the reply about these
   currentStage?: string | null; // the customer's current pipeline stage (context only)
@@ -62,7 +63,7 @@ function renderProducts(products: ProductMatch[]): string {
 // (trusted); the customer message is passed in the USER turn, fenced and labelled
 // as DATA (untrusted) so it cannot redefine the rules or the JSON envelope.
 export function buildDraftPrompt(ctx: PromptContext): DraftPrompt {
-  const { question, kb, recentWindow, summary, retrievedMessages, products, suggestProducts, confirmedProducts, currentStage, existingCustomer, agentText } = ctx;
+  const { question, kb, recentWindow, summary, retrievedMessages, products, shownProducts, suggestProducts, confirmedProducts, currentStage, existingCustomer, agentText } = ctx;
 
   // cached[0]: persona + rules + safety + JSON-format — STATIC, zero interpolation, byte-
   // identical on every call so it's a stable cache_control breakpoint.
@@ -105,6 +106,9 @@ export function buildDraftPrompt(ctx: PromptContext): DraftPrompt {
   if (products && products.length) {
     parts.push(`สินค้าที่ตรงกับคำถาม (จากแคตตาล็อก — ราคาเชื่อถือได้ ใช้ตอบได้):\n${renderProducts(products)}`);
   }
+  if (shownProducts && shownProducts.length) {
+    parts.push(`สินค้าที่ร้านเพิ่งส่งรูปให้ลูกค้า (ลูกค้าอาจอ้างถึงว่า อันนี้/ตัวนี้):\n${renderProducts(shownProducts)}`);
+  }
   if (suggestProducts && suggestProducts.length) {
     parts.push(`สินค้าที่เจ้าหน้าที่ต้องการแนะนำเพิ่ม/เสนอขายคู่ (ให้พูดถึง+เสนอในคำตอบ):\n${renderProducts(suggestProducts)}`);
   }
@@ -125,7 +129,7 @@ export function buildDraftPrompt(ctx: PromptContext): DraftPrompt {
 // Vision drafting prompt — the customer sent an IMAGE (attached to the user turn).
 export function buildImagePrompt(ctx: PromptContext): DraftPrompt {
   const {
-    question, kb, recentWindow, summary, retrievedMessages, products, suggestProducts,
+    question, kb, recentWindow, summary, retrievedMessages, products, shownProducts, suggestProducts,
     confirmedProducts, currentStage, existingCustomer, agentText, productSearchExpanded,
   } = ctx;
 
@@ -167,6 +171,9 @@ export function buildImagePrompt(ctx: PromptContext): DraftPrompt {
   if (recentWindow) parts.push(`ข้อความล่าสุดในบทสนทนา:\n${recentWindow}`);
   if (products && products.length) {
     parts.push(`สินค้าที่ตรงกับคำถาม/รูป (จากแคตตาล็อก — ราคาเชื่อถือได้ ใช้ตอบได้):\n${renderProducts(products)}`);
+  }
+  if (shownProducts && shownProducts.length) {
+    parts.push(`สินค้าที่ร้านเพิ่งส่งรูปให้ลูกค้า (ลูกค้าอาจอ้างถึงว่า อันนี้/ตัวนี้):\n${renderProducts(shownProducts)}`);
   }
   if (suggestProducts && suggestProducts.length) {
     parts.push(`สินค้าที่เจ้าหน้าที่ต้องการแนะนำเพิ่ม/เสนอขายคู่ (ให้พูดถึง+เสนอในคำตอบ):\n${renderProducts(suggestProducts)}`);

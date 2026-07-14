@@ -13,6 +13,7 @@ import { isStage } from '../stages.js';
 import { pushToConsole } from '../ws/io.js';
 import { isLow } from '../stock/helpers.js';
 import { hasPrice } from '../llm/guardrails.js';
+import { captionStaffUpload } from '../llm/captionImage.js';
 
 const RECENT_MESSAGES = 50;
 
@@ -499,6 +500,9 @@ export async function consoleRoutes(app: FastifyInstance) {
         ...(sendResult.quoteToken ? { quoteToken: sendResult.quoteToken } : {}),
       },
     });
+    if (attach?.attachmentType === 'image' && uploadId) {
+      void captionStaffUpload(message.id, uploadId);
+    }
     await prisma.customer.update({ where: { id: customer.id }, data: { lastSeen: new Date() } });
     pushToConsole('conversation:update', { customerId: customer.id, message });
     return { ok: true, message, dryRun: sendResult.dryRun };
@@ -536,6 +540,7 @@ export async function consoleRoutes(app: FastifyInstance) {
         ...(sendResult.channelMsgId ? { channelMsgId: sendResult.channelMsgId } : {}),
       },
     });
+    void captionStaffUpload(message.id, uploadId);
     await prisma.customer.update({ where: { id: customer.id }, data: { lastSeen: new Date() } });
     pushToConsole('conversation:update', { customerId: customer.id, message });
     return { ok: true, message, dryRun: sendResult.dryRun };

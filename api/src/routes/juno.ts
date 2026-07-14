@@ -704,6 +704,16 @@ export async function junoRoutes(app: FastifyInstance) {
     };
     const isUniqueError = (error: unknown): boolean => (error as { code?: string })?.code === 'P2002';
 
+    // Manual billNo override (เลขบิลเดิม — legacy paper books like "38-13"): any charset-valid
+    // number EXCEPT an RE-shaped one. A 7-digit number NOT starting with 9 would be classified
+    // as an Express RE by the ตรวจแล้ว chips (and rejected from billNos server-side), leaving
+    // the bill permanently un-linkable — refuse it here with a pointer to the 9-prefix rule.
+    if (parsed.data.billNo && /^\d{7}$/.test(parsed.data.billNo) && !parsed.data.billNo.startsWith('9')) {
+      return reply.code(400).send({
+        error: 'invalid_bill_no',
+        message: 'เลขบิล 7 หลักต้องขึ้นต้นด้วย 9 (เลข 7 หลักแบบอื่นถือเป็นเลข RE)',
+      });
+    }
     if (parsed.data.billNo) {
       try {
         const bill = await prisma.manualBill.create({ data: { ...base, billNo: parsed.data.billNo } });
@@ -716,10 +726,14 @@ export async function junoRoutes(app: FastifyInstance) {
       }
     }
 
-    // Bangkok year, not server/UTC year. Buddhist year 2569 -> two-digit 69.
+    // Auto-number = `9` + Buddhist YY + 4 running digits, e.g. 9690001 (owner convention
+    // 2026-07-14): 7 digits like an Express RE for fast numeric typing in the ตรวจแล้ว chips,
+    // but 9-leading — REs are year-led (69, 70, …), so the namespaces can never collide.
+    // Legacy MB69-#### bills keep their numbers (different prefix, excluded from this scan);
+    // the 969 sequence starts fresh at 0001. Bangkok year, not server/UTC year: 2569 -> 69.
     const gregorianYear = Number(thaiDayKey(new Date()).slice(0, 4));
     const year2 = String((gregorianYear + 543) % 100).padStart(2, '0');
-    const prefix = `MB${year2}-`;
+    const prefix = `9${year2}`;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const bill = await prisma.$transaction(async (tx) => {
@@ -1245,11 +1259,17 @@ export async function junoRoutes(app: FastifyInstance) {
     // Normalize each: trim, strip a leading RE/re, require exactly 7 digits — store bare
     // digits. Dedupe preserving order. Any invalid token (or an empty result) 400s the whole
     // request — there is no such thing as "verify with a partially-valid RE list".
+    // 9-leading 7-digit numbers are the บิลมือ namespace (969xxxx — see POST /bills), never an
+    // Express RE (those are year-led: 69, 70, …). The chips UI files them into billNos, so a
+    // 9-number arriving on the RE side is a mis-filed bill → reject rather than pollute
+    // กระทบยอด RE with a receipt number that can never import from ARRCPDAT.
     const seen = new Set<string>();
     const normalized: string[] = [];
     for (const raw of body.data.reNumbers) {
       const stripped = raw.trim().replace(/^re/i, '');
-      if (!/^\d{7}$/.test(stripped)) return reply.code(400).send({ error: 'invalid_re' });
+      if (!/^\d{7}$/.test(stripped) || stripped.startsWith('9')) {
+        return reply.code(400).send({ error: 'invalid_re' });
+      }
       if (!seen.has(stripped)) { seen.add(stripped); normalized.push(stripped); }
     }
     const seenBills = new Set<string>();

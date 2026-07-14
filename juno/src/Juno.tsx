@@ -1654,15 +1654,21 @@ function CashChequeSection({ payment: p, busy, run, isCeo }: {
   );
 }
 
-// Splits on '/', ',', or whitespace. Seven bare digits are an Express RE; every other token
-// that obeys the manual-bill charset is a บิลมือ number.
+// Splits on '/', ',', or whitespace. Seven bare digits are an Express RE — UNLESS they start
+// with 9, which is the บิลมือ namespace (969xxxx = 9 + พ.ศ. YY + running, owner convention
+// 2026-07-14; Express REs are year-led 69/70/… so the two can never collide). Every other
+// token that obeys the manual-bill charset is also a บิลมือ number (legacy MB69-####, 38-13).
+// The server mirrors both rules (POST /verify rejects 9-leading REs; POST /bills rejects
+// RE-shaped bill numbers), so a token can never land in the wrong bucket.
 const RE_SEPARATOR = /[/,\s]+/;
 type ReceiptToken = { kind: 're' | 'bill'; value: string };
 function normalizeReceiptToken(raw: string): ReceiptToken | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   const withoutPrefix = trimmed.replace(/^re/i, '');
-  if (/^\d{7}$/.test(withoutPrefix)) return { kind: 're', value: withoutPrefix };
+  if (/^\d{7}$/.test(withoutPrefix) && !withoutPrefix.startsWith('9')) {
+    return { kind: 're', value: withoutPrefix };
+  }
   const billNo = trimmed.toUpperCase();
   return /^[^/,\s]+$/.test(billNo) ? { kind: 'bill', value: billNo } : null;
 }
@@ -1782,7 +1788,7 @@ function ReceiptChipsBox({ state, onEnter, autoFocus }: {
           );
         })}
         <input ref={reRef} value={state.reInput} onChange={(e) => state.onReInputChange(e.target.value)} onKeyDown={onKeyDown}
-          placeholder={state.reNumbers.length || state.billNos.length ? 'เพิ่มอีก…' : 'เช่น 6900025 หรือ MB69-0001'} className="flex-1 min-w-[120px] text-sm focus:outline-none" />
+          placeholder={state.reNumbers.length || state.billNos.length ? 'เพิ่มอีก…' : 'เช่น 6900025 หรือ 9690001 (บิลมือ)'} className="flex-1 min-w-[120px] text-sm focus:outline-none" />
       </div>
       {state.checkingBills && <span className="text-[11px] text-slate-400">กำลังตรวจเลขบิล…</span>}
       {!state.checkingBills && state.unknownBills.size > 0 && <span className="text-[11px] text-amber-700">ไม่พบบิลนี้ในระบบ (ยังบันทึกได้)</span>}

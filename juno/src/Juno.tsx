@@ -161,7 +161,7 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
           caption: 'ขั้น 1–2 · รับเงิน+ตรวจ',
           tabs: [
             // badge = รอตรวจ queue (actionable), not the all-time total the bar used to show
-            { key: 'inbox' as const, label: 'รายการรับเงิน', icon: <Inbox size={16} />, count: summary?.received },
+            { key: 'inbox' as const, label: 'รับเงิน', icon: <Inbox size={16} />, count: summary?.received },
             ...(scope === 'full' ? [billTab] : []),
           ],
         },
@@ -175,23 +175,23 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
             // POST /receive for non-supervisor). Badge = still awaiting that confirm.
             ...(isCeo ? [{ key: 'receive' as const, label: 'เงินสด/เช็ค', icon: <HandCoins size={16} />, count: summary?.awaitingReceive }] : []),
             { key: 'recon' as const, label: 'ธนาคาร', icon: <Scale size={16} />, count: bankUnmatched },
-            { key: 'reRecon' as const, label: 'Express RE', icon: <FileCheck size={16} /> },
+            { key: 'reRecon' as const, label: 'RE', icon: <FileCheck size={16} /> },
           ],
         },
         {
           caption: 'คิวตรวจสอบ',
           tabs: [
             { key: 'flags' as const, label: 'ปักธง', icon: <Flag size={16} />, count: summary?.flagged },
-            { key: 'disc' as const, label: 'ยอดเกิน/ขาด', icon: <Scale size={16} />, count: summary?.discrepancyOpen },
-            // ตรวจสอบยอด stays employee/supervisor-visible; only the CEO can resolve.
-            { key: 'audit' as const, label: 'ตรวจสอบยอด', icon: <Banknote size={16} />, count: auditOpen },
+            { key: 'disc' as const, label: 'เกิน/ขาด', icon: <Scale size={16} />, count: summary?.discrepancyOpen },
+            // ตรวจยอด (FinanceAudit) stays employee/supervisor-visible; only the CEO can resolve.
+            { key: 'audit' as const, label: 'ตรวจยอด', icon: <Banknote size={16} />, count: auditOpen },
           ],
         },
         {
           caption: 'สรุป',
           tabs: [
-            // หัก ณ ที่จ่าย — visible to every non-md user; its own totals bar covers the count.
-            { key: 'wht' as const, label: 'หัก ณ ที่จ่าย', icon: <Percent size={16} /> },
+            // WHT (หัก ณ ที่จ่าย) — visible to every non-md user; its own totals bar covers the count.
+            { key: 'wht' as const, label: 'WHT', icon: <Percent size={16} /> },
             ...(isCeo ? [{ key: 'reports' as const, label: 'รายงาน', icon: <BarChart3 size={16} /> }] : []),
           ],
         },

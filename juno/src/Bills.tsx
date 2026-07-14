@@ -4,7 +4,7 @@ import {
   Plus, Printer, ReceiptText, RefreshCw, RotateCcw, Search, Trash2, X,
 } from 'lucide-react';
 import {
-  baht, createManualBill, getManualBillProducts, getManualBills, setManualBillVoid,
+  baht, createManualBill, deleteManualBill, getManualBillProducts, getManualBills, setManualBillVoid,
   updateManualBill, type ManualBill, type ManualBillBody, type ManualBillCounts,
   type ManualBillItem, type ManualBillProduct, type ManualBillStatus,
   type ManualBillStatusFilter,
@@ -41,7 +41,8 @@ function BillStatusChip({ status }: { status: ManualBillStatus }) {
   return <span className="px-2 py-0.5 rounded-full text-[11px] bg-rose-100 text-rose-700 whitespace-nowrap">⏳ ยังไม่จ่าย</span>;
 }
 
-export default function Bills({ onCountsChanged }: { onCountsChanged: (counts: ManualBillCounts) => void }) {
+// canDelete = CEO-only ลบถาวร (mirrors the payment drawer's gate; server 403s non-supervisor).
+export default function Bills({ onCountsChanged, canDelete }: { onCountsChanged: (counts: ManualBillCounts) => void; canDelete: boolean }) {
   const [q, setQ] = useState('');
   const [status, setStatus] = useState<ManualBillStatusFilter>('all');
   const [rows, setRows] = useState<ManualBill[]>([]);
@@ -133,6 +134,7 @@ export default function Bills({ onCountsChanged }: { onCountsChanged: (counts: M
         {selected && (
           <BillDrawer
             bill={selected}
+            canDelete={canDelete}
             onClose={() => setSelected(null)}
             onEdit={() => setEditing(selected)}
             onPrint={() => setPrintQueue([selected])}
@@ -152,10 +154,11 @@ export default function Bills({ onCountsChanged }: { onCountsChanged: (counts: M
   );
 }
 
-function BillDrawer({ bill, onClose, onEdit, onPrint, onChanged }: {
-  bill: ManualBill; onClose: () => void; onEdit: () => void; onPrint: () => void; onChanged: () => void;
+function BillDrawer({ bill, canDelete, onClose, onEdit, onPrint, onChanged }: {
+  bill: ManualBill; canDelete: boolean; onClose: () => void; onEdit: () => void; onPrint: () => void; onChanged: () => void;
 }) {
-  const [confirming, setConfirming] = useState(false);
+  // 'void' = the reversible ยกเลิก confirm; 'delete' = the CEO-only ลบถาวร confirm (กู้คืนไม่ได้).
+  const [confirming, setConfirming] = useState<'void' | 'delete' | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -164,10 +167,28 @@ function BillDrawer({ bill, onClose, onEdit, onPrint, onChanged }: {
     setError('');
     try {
       await setManualBillVoid(bill.id, bill.billStatus !== 'void');
-      setConfirming(false);
+      setConfirming(null);
       onChanged();
     } catch {
       setError('บันทึกสถานะไม่สำเร็จ');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function hardDelete() {
+    setBusy(true);
+    setError('');
+    try {
+      await deleteManualBill(bill.id);
+      setConfirming(null);
+      onChanged(); // reload no longer finds this id → the drawer clears itself
+      onClose();
+    } catch (e) {
+      // server 409 bill_linked: payments still carry this bill number in their chips
+      setError((e as Error).message === 'HTTP 409'
+        ? 'ลบไม่ได้ — มีรายการรับเงินอ้างถึงบิลนี้ (แก้เลขบิลออกจากรายการก่อน)'
+        : 'ลบบิลไม่สำเร็จ');
     } finally {
       setBusy(false);
     }
@@ -181,19 +202,33 @@ function BillDrawer({ bill, onClose, onEdit, onPrint, onChanged }: {
           <div className="flex gap-1">
             <button onClick={onPrint} title="พิมพ์บิล" className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><Printer size={16} /></button>
             <button onClick={onEdit} title="แก้ไข" className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><PenLine size={16} /></button>
-            <button onClick={() => setConfirming(true)} title={bill.billStatus === 'void' ? 'กู้คืน' : 'ยกเลิกบิล'} className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-rose-50 hover:text-rose-600">
+            <button onClick={() => setConfirming('void')} title={bill.billStatus === 'void' ? 'กู้คืน' : 'ยกเลิกบิล'} className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-rose-50 hover:text-rose-600">
               {bill.billStatus === 'void' ? <RotateCcw size={16} /> : <Ban size={16} />}
             </button>
+            {/* ลบถาวร — CEO-only (canDelete = supervisor; server 403s everyone else). */}
+            {canDelete && (
+              <button onClick={() => setConfirming('delete')} title="ลบถาวร (กู้คืนไม่ได้)" className="p-2 rounded-lg border border-rose-200 text-rose-500 hover:bg-rose-50 hover:text-rose-700">
+                <Trash2 size={16} />
+              </button>
+            )}
             <button onClick={onClose} title="ปิด" className="p-2 text-slate-400 hover:text-slate-600"><X size={18} /></button>
           </div>
         </div>
 
-        {confirming && (
+        {confirming === 'void' && (
           <div className="m-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs flex items-center gap-2">
             <AlertTriangle size={14} className="text-amber-600 shrink-0" />
             <span className="flex-1">{bill.billStatus === 'void' ? 'กู้คืนบิลนี้?' : 'ยกเลิกบิลนี้? ข้อมูลจะยังอยู่และกู้คืนได้'}</span>
             <button disabled={busy} onClick={() => void toggleVoid()} className="px-2 py-1 rounded bg-amber-600 text-white disabled:opacity-50">ยืนยัน</button>
-            <button disabled={busy} onClick={() => setConfirming(false)} className="px-2 py-1 rounded bg-white border border-slate-200">ปิด</button>
+            <button disabled={busy} onClick={() => setConfirming(null)} className="px-2 py-1 rounded bg-white border border-slate-200">ปิด</button>
+          </div>
+        )}
+        {confirming === 'delete' && (
+          <div className="m-3 p-3 rounded-lg bg-rose-50 border border-rose-200 text-xs flex items-center gap-2">
+            <AlertTriangle size={14} className="text-rose-600 shrink-0" />
+            <span className="flex-1">ลบบิล {bill.billNo} ถาวร? <b>กู้คืนไม่ได้</b></span>
+            <button disabled={busy} onClick={() => void hardDelete()} className="px-2 py-1 rounded bg-rose-600 text-white disabled:opacity-50">ลบถาวร</button>
+            <button disabled={busy} onClick={() => setConfirming(null)} className="px-2 py-1 rounded bg-white border border-slate-200">ปิด</button>
           </div>
         )}
         {error && <div className="m-3 p-2 bg-rose-50 text-rose-700 text-xs rounded-lg">{error}</div>}

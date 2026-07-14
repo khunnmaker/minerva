@@ -210,7 +210,7 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
         ) : view === 'reRecon' ? (
           <ReRecon isCeo={isCeo} />
         ) : view === 'bills' ? (
-          <Bills onCountsChanged={handleBillCounts} />
+          <Bills onCountsChanged={handleBillCounts} canDelete={canDelete} />
         ) : view === 'disc' ? (
           <Discrepancies isCeo={isCeo} onChanged={refreshSummary} />
         ) : view === 'audit' ? (

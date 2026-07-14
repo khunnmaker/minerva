@@ -46,6 +46,10 @@ const EMPLOYEE_JUNO_DENIED_ROUTES = new Set([
   'POST /api/juno/bills',
   'PATCH /api/juno/bills/:id',
   'POST /api/juno/bills/:id/void',
+  // hard delete is supervisor-only INSIDE the handler too (md is blocked by default-deny
+  // above — deletion is deliberately NOT in Nee's allowlist); this entry keeps the
+  // "employees never mutate bills" invariant readable in one place.
+  'DELETE /api/juno/bills/:id',
 ]);
 
 // Juno finance API. Reads the Payment table (written by Minerva's /to-finance hook) and
@@ -798,6 +802,26 @@ export async function junoRoutes(app: FastifyInstance) {
         : { status: 'open', voidedAt: null, voidedById: null },
     });
     return { ok: true, bill };
+  });
+
+  // DELETE /api/juno/bills/:id — CEO-ONLY hard delete (ลบถาวร), mirroring the Payment delete:
+  // gated to `supervisor` INSIDE the handler (first line 403) — md can issue/edit/void bills
+  // but never destroy them (deletion is deliberately absent from Nee's allowlist as well).
+  // A bill any Payment still references (billNos has its number) is protected with a 409:
+  // deleting it would strand orphan chips on verified payments (red "ไม่พบบิลนี้ในระบบ") and
+  // silently rewrite FIN's check data — remove the chip via แก้ไขข้อมูลเอกสาร first. Void
+  // (ยกเลิก) stays the everyday, reversible path; delete is for junk/test bills.
+  app.delete<{ Params: { id: string } }>('/api/juno/bills/:id', async (req, reply) => {
+    if (req.agent?.role !== 'supervisor') return reply.code(403).send({ error: 'forbidden' });
+    const existing = await prisma.manualBill.findUnique({ where: { id: req.params.id }, select: { id: true, billNo: true } });
+    if (!existing) return reply.code(404).send({ error: 'not_found' });
+    const linked = await prisma.payment.count({ where: { billNos: { has: existing.billNo } } });
+    if (linked > 0) {
+      return reply.code(409).send({ error: 'bill_linked', message: `มีรายการรับเงิน ${linked} รายการอ้างถึงบิลนี้` });
+    }
+    await prisma.manualBill.delete({ where: { id: req.params.id } });
+    req.log.info({ billId: existing.id, billNo: existing.billNo, by: req.agent?.id }, 'manual bill hard-deleted');
+    return { ok: true };
   });
 
   // Read-only shared Product picker. The normalized comparison makes 071009 find 07-10-09.

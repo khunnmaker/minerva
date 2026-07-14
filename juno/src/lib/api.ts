@@ -897,6 +897,12 @@ export const setManualBillVoid = (id: string, value: boolean) =>
     method: 'POST', body: JSON.stringify({ void: value }),
   });
 
+// CEO-only hard delete (ลบถาวร) — server 403s anyone but supervisor, and 409s (bill_linked)
+// while any payment still carries the bill number in its billNos chips. Contrast with
+// setManualBillVoid above, the everyday reversible ยกเลิก.
+export const deleteManualBill = (id: string) =>
+  authed<{ ok: boolean }>(`/api/juno/bills/${id}`, { method: 'DELETE' });
+
 export interface ManualBillProduct {
   id: string;
   sku: string;

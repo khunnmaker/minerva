@@ -1726,20 +1726,21 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                           )}
                           <MessageBody m={m} />
                           <div className={'text-[10px] mt-0.5 flex items-baseline justify-between gap-3 ' + (m.role === 'customer' ? 'text-slate-400' : 'text-sky-100')}>
-                            <span className="flex items-center gap-1">
+                            <span className="flex items-center gap-1 flex-wrap">
                               {fmtTime(m.createdAt)}
                               {canReply && <CornerUpLeft size={11} className={isReplying ? 'text-sky-500' : 'text-slate-300'} />}
+                              {/* แจ้งการเงิน sits inline right after the time + reply icon (customer image/slip only). */}
+                              {m.role === 'customer' && m.attachmentType === 'image' && (
+                                m.financeSentAt
+                                  ? <span className="text-sky-600 font-medium flex items-center gap-1"><CheckCircle2 size={11} /> ส่งการเงินแล้ว</span>
+                                  : <button type="button" onClick={(e) => { e.stopPropagation(); setFinanceMsg(m.id); }}
+                                      className="px-2 py-0.5 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 font-medium flex items-center gap-1">
+                                      <Banknote size={12} /> แจ้งการเงิน
+                                    </button>
+                              )}
                             </span>
                             {m.role !== 'customer' && m.agentName && <span className="text-sky-100/80">— {m.agentName}</span>}
                           </div>
-                          {m.role === 'customer' && m.attachmentType === 'image' && (
-                            m.financeSentAt
-                              ? <div className="mt-1 text-[10px] text-sky-600 font-medium flex items-center gap-1"><CheckCircle2 size={11} /> ส่งการเงินแล้ว</div>
-                              : <button type="button" onClick={(e) => { e.stopPropagation(); setFinanceMsg(m.id); }}
-                                  className="mt-1 text-[10px] px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 font-medium flex items-center gap-1">
-                                  <Banknote size={12} /> แจ้งการเงิน
-                                </button>
-                          )}
                         </div>
                       </div>
                       );

@@ -108,6 +108,22 @@ check('sub: no-subgroup impression → IM01', ga('07-06-16') === 'IM01');
 check('sub: all codes unique', new Set(sgRes.map((r) => r.alias)).size === sgRes.length);
 check('sub: invalid sub code falls back to group code', buildGroupAliases([{ sku: '07-01-04', catalogGroup: 'impression', catalogSubgroup: 'ZZ' }])[0].alias === 'IM01');
 
+const alphanumericSubs = { impression: new Set(['T1']) };
+const alphaNum = buildGroupAliases(
+  [{ sku: '07-01-04', catalogGroup: 'impression', catalogSubgroup: 'T1' }],
+  { subCodes: alphanumericSubs },
+);
+check('sub: alphanumeric T1 → IMT101', alphaNum[0].alias === 'IMT101');
+const alphaNumFill = buildGroupAliases(
+  [
+    { sku: '07-01-04', catalogGroup: 'impression', catalogSubgroup: 'T1' },
+    { sku: '07-01-07', catalogGroup: 'impression', catalogSubgroup: 'T1' },
+  ],
+  { keep: { '07-01-04': 'IMT101' }, subCodes: alphanumericSubs },
+);
+check('sub fill: kept IMT101 preserved', alphaNumFill.find((r) => r.sku === '07-01-04')?.alias === 'IMT101');
+check('sub fill: alphanumeric numbering continues → IMT102', alphaNumFill.find((r) => r.sku === '07-01-07')?.alias === 'IMT102');
+
 // autoAssignSubgroup
 check('autosub: alginate name → AL', autoAssignSubgroup('impression', { nameEn: 'ALGINMAX NEW', nameTh: 'ผงพิมพ์ปาก' }) === 'AL');
 check('autosub: silicone name → PV', autoAssignSubgroup('impression', { nameEn: 'Ormadent putty', nameTh: 'ซิลิโคน' }) === 'PV');

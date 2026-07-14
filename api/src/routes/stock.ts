@@ -9,7 +9,7 @@ import { toStockRow } from '../stock/helpers.js';
 import { setStock } from '../stock/adjust.js';
 import { decodeExpressBytes, parseExpressReport, type ParsedStockRow } from '../stock/parseExpressReport.js';
 import { buildGroupAliases, groupOf } from '../stock/aliases.js';
-import { autoAssignGroup, autoAssignSubgroup } from '../stock/catalogGroups.js';
+import { autoAssignGroup, autoAssignSubgroup, SUBGROUPS } from '../stock/catalogGroups.js';
 import { loadTaxonomy, PILLARS } from '../stock/taxonomy.js';
 import { NAME_PROPOSALS } from '../catalog/nameProposals.js';
 import { EXPRESS_NAMES } from '../catalog/expressNames.js';
@@ -815,7 +815,8 @@ export async function stockRoutes(app: FastifyInstance) {
   });
 
   // POST /api/stock/groups/create-subgroup { groupKey, nameTh, nameEn, code } — add a sub-group to
-  // ANY group (built-in or custom). code is 2 letters, unique within that group.
+  // ANY group (built-in or custom). code is 2 letters/digits with at least one letter, unique
+  // within that group.
   app.post('/api/stock/groups/create-subgroup', async (req, reply) => {
     const b = req.body as { groupKey?: string; nameTh?: string; nameEn?: string; code?: string };
     const groupKey = String(b.groupKey ?? '').trim();
@@ -823,13 +824,35 @@ export async function stockRoutes(app: FastifyInstance) {
     const nameEn = String(b.nameEn ?? '').trim();
     const code = String(b.code ?? '').trim().toUpperCase();
     if (!nameTh && !nameEn) return reply.code(400).send({ error: 'name_required' });
-    if (!/^[A-Z]{2}$/.test(code)) return reply.code(400).send({ error: 'bad_code' });
+    // Pure digits could make group+subgroup prefixes indistinguishable from real product aliases.
+    if (!/^(?=.*[A-Z])[A-Z0-9]{2}$/.test(code)) return reply.code(400).send({ error: 'bad_code' });
     const tax = await loadTaxonomy();
     if (!tax.groupKeys.has(groupKey)) return reply.code(400).send({ error: 'bad_group' });
     if (tax.subCodesByGroup[groupKey]?.has(code)) return reply.code(409).send({ error: 'code_taken' });
     const sortOrder = await prisma.catalogSubgroupDef.count({ where: { groupKey } });
     const s = await prisma.catalogSubgroupDef.create({ data: { groupKey, code, nameTh, nameEn, sortOrder } });
     return { ok: true, groupKey, subgroup: { code: s.code, nameTh: s.nameTh, nameEn: s.nameEn, custom: true } };
+  });
+
+  // POST /api/stock/groups/rename-subgroup { groupKey, code, nameTh, nameEn } — update display
+  // names for any sub-group. A built-in sub-group gets a DB-backed name override; its code stays.
+  app.post('/api/stock/groups/rename-subgroup', async (req, reply) => {
+    const b = req.body as { groupKey?: string; code?: string; nameTh?: string; nameEn?: string };
+    const groupKey = String(b.groupKey ?? '').trim();
+    const code = String(b.code ?? '').trim().toUpperCase();
+    const nameTh = String(b.nameTh ?? '').trim();
+    const nameEn = String(b.nameEn ?? '').trim();
+    if (!nameTh && !nameEn) return reply.code(400).send({ error: 'name_required' });
+    const tax = await loadTaxonomy();
+    if (!tax.groupKeys.has(groupKey)) return reply.code(400).send({ error: 'bad_group' });
+    if (!tax.subCodesByGroup[groupKey]?.has(code)) return reply.code(400).send({ error: 'bad_subgroup' });
+    const sortOrder = await prisma.catalogSubgroupDef.count({ where: { groupKey } });
+    await prisma.catalogSubgroupDef.upsert({
+      where: { groupKey_code: { groupKey, code } },
+      update: { nameTh, nameEn },
+      create: { groupKey, code, nameTh, nameEn, sortOrder },
+    });
+    return { ok: true, groupKey, subgroup: { code, nameTh, nameEn } };
   });
 
   // POST /api/stock/groups/delete { key } — delete a STAFF-CREATED group (built-ins can't be
@@ -852,6 +875,7 @@ export async function stockRoutes(app: FastifyInstance) {
     const b = req.body as { groupKey?: string; code?: string };
     const groupKey = String(b.groupKey ?? '').trim();
     const code = String(b.code ?? '').trim().toUpperCase();
+    if ((SUBGROUPS[groupKey] ?? []).some((s) => s.code === code)) return reply.code(404).send({ error: 'not_custom' });
     const def = await prisma.catalogSubgroupDef.findUnique({ where: { groupKey_code: { groupKey, code } } });
     if (!def) return reply.code(404).send({ error: 'not_custom' });
     await prisma.product.updateMany({ where: { catalogGroup: groupKey, catalogSubgroup: code }, data: { catalogSubgroup: null } });

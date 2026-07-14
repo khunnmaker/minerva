@@ -17,7 +17,7 @@ import {
   generateAliases, setAlias,
   getGroups, getGroupProducts, autoAssignGroups, setProductGroup, setSubgroup,
   setProductsGroup, setSubgroups,
-  createGroup, createSubgroup, deleteGroup, deleteSubgroup, emptyTrash,
+  createGroup, createSubgroup, renameSubgroup, deleteGroup, deleteSubgroup, emptyTrash,
   type NameProposalRow, type ProposalSummary, type ProposalFilter,
   getProposalSummary, getProposals, loadProposals, decideProposal, bulkApproveSafe,
 } from './lib/api';
@@ -1437,7 +1437,7 @@ function CreateGroupForm({ onCreated }: { onCreated: () => void }) {
   );
 }
 
-// Sub-group manager for the open group: lists sub-groups (custom ones deletable) + a create form.
+// Sub-group manager for the open group: lists editable sub-groups (custom ones deletable) + a create form.
 function SubgroupManager({ group, onChanged }: { group: CatalogGroupInfo; onChanged: () => void }) {
   const [open, setOpen] = useState(false);
   const [nameTh, setNameTh] = useState('');
@@ -1445,11 +1445,14 @@ function SubgroupManager({ group, onChanged }: { group: CatalogGroupInfo; onChan
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editNameTh, setEditNameTh] = useState('');
+  const [editNameEn, setEditNameEn] = useState('');
 
   async function submit() {
     setErr('');
     if (!nameTh.trim() && !nameEn.trim()) { setErr('กรอกชื่อชนิด'); return; }
-    if (!/^[A-Za-z]{2}$/.test(code.trim())) { setErr('รหัส 2 ตัวอักษร'); return; }
+    if (!/^(?=.*[A-Z])[A-Z0-9]{2}$/.test(code.trim().toUpperCase())) { setErr('รหัส 2 ตัว ใช้อักษร A-Z/เลขได้ ต้องมีอักษรอย่างน้อย 1 ตัว'); return; }
     setBusy(true);
     try {
       await createSubgroup(group.key, nameTh.trim(), nameEn.trim(), code.trim().toUpperCase());
@@ -1465,14 +1468,39 @@ function SubgroupManager({ group, onChanged }: { group: CatalogGroupInfo; onChan
     setErr('');
     try { await deleteSubgroup(group.key, c); onChanged(); } catch { setErr('ลบชนิดไม่สำเร็จ'); }
   }
+  function startEdit(c: string) {
+    const s = group.subgroups.find((x) => x.code === c);
+    if (!s) return;
+    setEditing(c); setEditNameTh(s.nameTh); setEditNameEn(s.nameEn); setErr('');
+  }
+  async function saveEdit() {
+    if (!editing) return;
+    setErr('');
+    if (!editNameTh.trim() && !editNameEn.trim()) { setErr('กรอกชื่อชนิด'); return; }
+    setBusy(true);
+    try {
+      await renameSubgroup(group.key, editing, editNameTh.trim(), editNameEn.trim());
+      setEditing(null);
+      onChanged();
+    } catch { setErr('เปลี่ยนชื่อไม่สำเร็จ'); } finally { setBusy(false); }
+  }
 
   return (
     <div className="mb-3 flex flex-wrap items-center gap-1.5">
       <span className="text-[11px] text-slate-400">ชนิด:</span>
       {group.subgroups.length === 0 && <span className="text-[11px] text-slate-300">— ยังไม่มี —</span>}
-      {group.subgroups.map((s) => (
+      {group.subgroups.map((s) => editing === s.code ? (
+        <span key={s.code} className="inline-flex items-center gap-1">
+          <b className="px-2 py-1 rounded-lg bg-slate-100 font-mono text-xs text-indigo-600">{s.code}</b>
+          <input value={editNameTh} onChange={(e) => setEditNameTh(e.target.value)} placeholder="ชื่อไทย" className="w-24 px-2 py-1 rounded-lg border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+          <input value={editNameEn} onChange={(e) => setEditNameEn(e.target.value)} placeholder="อังกฤษ" className="w-20 px-2 py-1 rounded-lg border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+          <button onClick={saveEdit} disabled={busy} className="px-2 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs disabled:opacity-50">{busy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}</button>
+          <button onClick={() => { setEditing(null); setErr(''); }} className="text-xs text-slate-400 hover:text-slate-600 px-1">✕</button>
+        </span>
+      ) : (
         <span key={s.code} className="inline-flex items-center gap-1 pl-2 pr-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[11px]">
           <b className="font-mono text-indigo-600">{s.code}</b> {s.nameTh || s.nameEn}
+          <button onClick={() => startEdit(s.code)} className="text-slate-400 hover:text-indigo-600" title="แก้ชื่อชนิด"><Pencil size={11} /></button>
           {s.custom && <button onClick={() => removeSub(s.code)} className="text-slate-400 hover:text-rose-600" title="ลบชนิด"><X size={11} /></button>}
         </span>
       ))}
@@ -1480,7 +1508,7 @@ function SubgroupManager({ group, onChanged }: { group: CatalogGroupInfo; onChan
         <span className="inline-flex items-center gap-1">
           <input value={nameTh} onChange={(e) => setNameTh(e.target.value)} placeholder="ชื่อไทย" className="w-24 px-2 py-1 rounded-lg border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400" />
           <input value={nameEn} onChange={(e) => setNameEn(e.target.value)} placeholder="อังกฤษ" className="w-20 px-2 py-1 rounded-lg border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400" />
-          <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2))} placeholder="รหัส" className="w-14 px-2 py-1 rounded-lg border border-slate-300 text-xs font-mono uppercase focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+          <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 2))} placeholder="รหัส" className="w-14 px-2 py-1 rounded-lg border border-slate-300 text-xs font-mono uppercase focus:outline-none focus:ring-2 focus:ring-indigo-400" />
           <button onClick={submit} disabled={busy} className="px-2 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs disabled:opacity-50">{busy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}</button>
           <button onClick={() => { setOpen(false); setErr(''); }} className="text-xs text-slate-400 hover:text-slate-600 px-1">✕</button>
         </span>

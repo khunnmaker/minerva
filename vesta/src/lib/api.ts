@@ -292,7 +292,7 @@ export const setAlias = (sku: string, alias: string) =>
 // ── Catalog groups (merchandising taxonomy) ─────────────────────────────
 export type Pillar = 'lab' | 'digital' | 'clinical' | 'equipment' | 'review';
 export interface SubGroupInfo {
-  code: string; // 2-letter, within its group (e.g. "AL" → IMAL01)
+  code: string; // 2-character alphanumeric with a letter, within its group (e.g. "T1" → IMT101)
   nameTh: string;
   nameEn: string;
   custom?: boolean; // staff-created (deletable) vs built-in
@@ -374,8 +374,9 @@ export const setSubgroups = (skus: string[], subgroup: string | null) =>
     body: JSON.stringify({ skus, subgroup }),
   });
 
-// ── Create / delete staff-defined groups + sub-groups ────────────────────
-// code = 2 uppercase letters (product-code prefix). Throws 'HTTP 409' on a duplicate code.
+// ── Create / rename / delete staff-defined groups + sub-groups ───────────
+// Group codes = 2 uppercase letters; subgroup codes = 2 uppercase letters/digits with ≥1 letter.
+// Throws 'HTTP 409' on a duplicate code.
 export const createGroup = (nameTh: string, nameEn: string, code: string, pillar: Pillar) =>
   authed<{ ok: boolean; group: CatalogGroupInfo }>('/api/stock/groups/create', {
     method: 'POST',
@@ -386,6 +387,12 @@ export const createSubgroup = (groupKey: string, nameTh: string, nameEn: string,
   authed<{ ok: boolean; groupKey: string; subgroup: SubGroupInfo }>('/api/stock/groups/create-subgroup', {
     method: 'POST',
     body: JSON.stringify({ groupKey, nameTh, nameEn, code }),
+  });
+
+export const renameSubgroup = (groupKey: string, code: string, nameTh: string, nameEn: string) =>
+  authed<{ ok: boolean; groupKey: string; subgroup: SubGroupInfo }>('/api/stock/groups/rename-subgroup', {
+    method: 'POST',
+    body: JSON.stringify({ groupKey, code, nameTh, nameEn }),
   });
 
 // Delete a staff-created group (its products become ungrouped). Built-ins return HTTP 404.

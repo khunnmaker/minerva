@@ -1,9 +1,11 @@
 // Merged catalog taxonomy = built-in groups/sub-groups (code, in catalogGroups.ts) OVERLAID with
 // staff-created ones (DB: CatalogGroupDef / CatalogSubgroupDef). Every route that needs the group
 // vocabulary (the /groups list, group/sub-group validation, code generation) loads it from HERE so
-// custom groups behave exactly like built-ins. Built-ins always exist even if the DB tables are
-// empty, so the taxonomy can never "disappear". Auto-assign RULES stay code-only (regex) and only
-// ever target built-in keys — custom groups are manual-assignment only, which is intended.
+// custom groups behave exactly like built-ins. A DB sub-group row matching a built-in code
+// overrides that built-in's display names without changing its position or custom status. Built-ins
+// always exist even if the DB tables are empty, so the taxonomy can never "disappear". Auto-assign
+// RULES stay code-only (regex) and only ever target built-in keys — custom groups are
+// manual-assignment only, which is intended.
 
 import { prisma } from '../db/prisma.js';
 import { CATALOG_GROUPS, SUBGROUPS, type Pillar } from './catalogGroups.js';
@@ -50,10 +52,13 @@ export async function loadTaxonomy(): Promise<Taxonomy> {
 
   const subgroupsByGroup = new Map<string, TaxSubgroup[]>();
   for (const g of groups) {
-    const builtin: TaxSubgroup[] = (SUBGROUPS[g.key] ?? []).map((s) => ({ ...s, custom: false }));
-    const custom: TaxSubgroup[] = customSubs
-      .filter((s) => s.groupKey === g.key)
-      // drop any custom sub whose code collides with a built-in sub of the same group (built-in wins)
+    const groupSubs = customSubs.filter((s) => s.groupKey === g.key);
+    const overrides = new Map(groupSubs.map((s) => [s.code, s]));
+    const builtin: TaxSubgroup[] = (SUBGROUPS[g.key] ?? []).map((s) => {
+      const override = overrides.get(s.code);
+      return { ...s, ...(override ? { nameTh: override.nameTh, nameEn: override.nameEn } : {}), custom: false };
+    });
+    const custom: TaxSubgroup[] = groupSubs
       .filter((s) => !builtin.some((b) => b.code === s.code))
       .map((s) => ({ code: s.code, nameTh: s.nameTh, nameEn: s.nameEn, custom: true }));
     const merged = [...builtin, ...custom];

@@ -161,7 +161,7 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
           caption: 'ขั้น 1–2 · รับเงิน+ตรวจ',
           tabs: [
             // badge = รอตรวจ queue (actionable), not the all-time total the bar used to show
-            { key: 'inbox' as const, label: 'รับเงิน', icon: <Inbox size={16} />, count: summary?.received },
+            { key: 'inbox' as const, label: 'รายการ', icon: <Inbox size={16} />, count: summary?.received },
             ...(scope === 'full' ? [billTab] : []),
           ],
         },
@@ -184,7 +184,7 @@ export default function Juno({ agent, onLogout }: { agent: Agent; onLogout: () =
             { key: 'flags' as const, label: 'ปักธง', icon: <Flag size={16} />, count: summary?.flagged },
             { key: 'disc' as const, label: 'เกิน/ขาด', icon: <Scale size={16} />, count: summary?.discrepancyOpen },
             // ตรวจยอด (FinanceAudit) stays employee/supervisor-visible; only the CEO can resolve.
-            { key: 'audit' as const, label: 'ตรวจยอด', icon: <Banknote size={16} />, count: auditOpen },
+            { key: 'audit' as const, label: 'ตรวจสอบ', icon: <Banknote size={16} />, count: auditOpen },
           ],
         },
         {

@@ -94,9 +94,8 @@ function SummaryCards({ summary }: { summary: BankSummary | null }) {
       </div>
     );
   }
+  // Receipts-first, matching the ตามใบเสร็จ default view (owner order 2026-07-15).
   const cards = [
-    { label: 'เงินเข้ารอจับคู่', count: summary.unmatchedIn.count, sum: summary.unmatchedIn.sum, tone: 'text-rose-600' },
-    { label: 'จับคู่แล้ว รอยืนยัน Express', count: summary.matchedUnconfirmed.count, sum: summary.matchedUnconfirmed.sum, tone: 'text-sky-600' },
     {
       label: 'ใบเสร็จตรวจแล้ว ยังไม่พบเงินเข้า',
       count: summary.verifiedUnreconciled.count,
@@ -104,6 +103,8 @@ function SummaryCards({ summary }: { summary: BankSummary | null }) {
       tone: summary.verifiedUnreconciled.oldestDays >= 7 ? 'text-rose-600' : 'text-amber-600',
       sub: summary.verifiedUnreconciled.count > 0 ? `เก่าสุด ${summary.verifiedUnreconciled.oldestDays} วัน` : undefined,
     },
+    { label: 'จับคู่แล้ว รอยืนยัน Express', count: summary.matchedUnconfirmed.count, sum: summary.matchedUnconfirmed.sum, tone: 'text-sky-600' },
+    { label: 'เงินเข้ารอจับคู่', count: summary.unmatchedIn.count, sum: summary.unmatchedIn.sum, tone: 'text-rose-600' },
   ];
   return (
     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

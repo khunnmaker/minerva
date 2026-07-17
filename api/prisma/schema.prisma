@@ -281,7 +281,8 @@ model LearnedAnswer {
   finalAnswer      String
   agentId          String
   edited           Boolean  @default(true)
-  status           String   @default("pending") // pending | approved | rejected
+  status           String   @default("pending") // pending | flagged | promoting | resolving | approved | rejected
+  flagNote         String?
   promotedKbId     String?
   createdAt        DateTime @default(now())
 }

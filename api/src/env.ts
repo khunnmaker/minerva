@@ -60,6 +60,9 @@ const schema = z.object({
   CERES_MESSENGER_PINS: z.string().default(''),   // "ta:123456,arm:234567,…" slug:pin pairs
   CERES_FLOOR: z.coerce.number().default(40000),
   CERES_CEO_THRESHOLD: z.coerce.number().default(5000),
+  // Rollback-only compatibility for pre-revamp stable receipt HMACs. New links
+  // are always expiry-bound regardless of this flag.
+  CERES_ALLOW_LEGACY_MEDIA_TOKENS: z.string().default(''),
   // Hour (0-23, Thai local time) the nightly CEO digest fires — see ceres/nightlyDigest.ts.
   CERES_DIGEST_HOUR: z.coerce.number().int().min(0).max(23).default(21),
 

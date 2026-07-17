@@ -14,6 +14,10 @@ export const UPLOAD_ID_RE = /^[A-Za-z0-9-]+$/;
 export interface CeresReceiptMeta {
   contentType: string;
   sha256: string;
+  // Optional so sidecars written before Phase 1 remain readable.
+  ocrAmount?: string;
+  ocrVendor?: string;
+  ocrDate?: string;
 }
 
 // Save a receipt photo. Only image/* is accepted (receipts are phone-camera
@@ -43,6 +47,21 @@ export async function readCeresReceiptMeta(uploadId: string): Promise<CeresRecei
   } catch {
     return null;
   }
+}
+
+export async function saveCeresReceiptOcr(
+  uploadId: string,
+  ocr: { amount: string; vendor: string; dateText: string },
+): Promise<void> {
+  const meta = await readCeresReceiptMeta(uploadId);
+  if (!meta) return;
+  const updated: CeresReceiptMeta = {
+    ...meta,
+    ocrAmount: ocr.amount,
+    ocrVendor: ocr.vendor,
+    ocrDate: ocr.dateText,
+  };
+  await fs.writeFile(path.join(CERES_DIR, `${uploadId}.json`), JSON.stringify(updated), 'utf8');
 }
 
 export async function readCeresReceiptFile(uploadId: string): Promise<Buffer | null> {

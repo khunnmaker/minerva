@@ -1,9 +1,17 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../../db/prisma.js';
 import { env } from '../../env.js';
 import { requireCeresRole, ceresRole as ceresRoleOf } from '../../ceres/auth.js';
-import { saveCeresReceipt, readCeresReceiptMeta } from '../../ceres/receiptStore.js';
+import { saveCeresReceipt, readCeresReceiptMeta, saveCeresReceiptOcr } from '../../ceres/receiptStore.js';
+import {
+  ceresMediaPurposeSchema,
+  mediaCanBeAttachedBy,
+  mediaVisibleToAgent,
+  type CeresMediaPurpose,
+} from '../../ceres/mediaAccess.js';
+import { ceresReceiptExpiry } from '../../ceres/receiptLink.js';
+import { CashLedgerError, createLegacyAdvance, lockPettyCash } from '../../ceres/requestMoney.js';
 import { readReceiptImage } from '../../llm/readReceipt.js';
 import { reviewExpensePostHoc } from '../../ceres/aiReview.js';
 import { ceresReceiptUrl, isValidAmount, thaiDayKey, thaiDayRange, toExpenseRow, computeBoard } from './common.js';
@@ -21,7 +29,7 @@ function reqBase(req: { headers: Record<string, unknown> }): string {
 
 // POST /close guard failures inside the transaction surface as typed throws → 409s.
 class CloseGuard extends Error {
-  constructor(public code: 'already_closed_today' | 'pending_exist', public pendingCount = 0) {
+  constructor(public code: 'already_closed_today' | 'pending_exist' | 'negative_box_balance', public pendingCount = 0) {
     super(code);
   }
 }
@@ -53,38 +61,79 @@ export function p1Routes(app: FastifyInstance) {
     };
   });
 
-  // POST /api/ceres/receipts { dataB64, contentType } — save a receipt photo + best-effort OCR.
+  const mediaUploadBody = z.object({
+    dataB64: z.string().min(1),
+    contentType: z.string().min(1),
+    purpose: ceresMediaPurposeSchema.optional(),
+  });
+  const uploadMedia = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    forcedPurpose?: CeresMediaPurpose,
+  ) => {
+    const body = mediaUploadBody.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
+    const purpose = forcedPurpose ?? body.data.purpose;
+    if (!purpose) return reply.code(400).send({ error: 'invalid_purpose' });
+
+    const saved = await saveCeresReceipt(body.data.dataB64, body.data.contentType);
+    if (!saved) return reply.code(400).send({ error: 'invalid_image' });
+    const buf = Buffer.from(body.data.dataB64, 'base64');
+    // Duplicate check + OCR are independent reads off the just-saved upload — run
+    // them concurrently rather than back-to-back.
+    const [dup, ocrFields] = await Promise.all([
+      prisma.ceresExpense.findFirst({
+        where: { receiptSha: saved.sha256, status: { notIn: ['rejected', 'void'] } },
+        orderBy: { createdAt: 'desc' },
+      }),
+      readReceiptImage(buf, body.data.contentType).catch(() => ({ amount: '', vendor: '', dateText: '' })),
+    ]);
+    await Promise.all([
+      saveCeresReceiptOcr(saved.uploadId, ocrFields),
+      prisma.ceresMedia.create({
+        data: {
+          id: saved.uploadId,
+          purpose,
+          sha256: saved.sha256,
+          uploadedById: req.agent!.id,
+          uploadedByName: req.agent!.name,
+        },
+      }),
+    ]);
+
+    return {
+      uploadId: saved.uploadId,
+      url: ceresReceiptUrl(reqBase(req), saved.uploadId),
+      ocr: ocrFields,
+      // Informational only — nothing is blocked. No ids: the messenger only needs
+      // the human summary of the earlier entry that used this same photo.
+      duplicate: dup ? { partyName: dup.partyName, amount: dup.amount, spentAt: dup.spentAt.toISOString() } : null,
+    };
+  };
+
+  // The old endpoint remains an exact compatibility alias.
   app.post(
     '/api/ceres/receipts',
-    {
-      preHandler: requireCeresRole('messenger', 'gm', 'ceo'),
-      bodyLimit: 15 * 1024 * 1024,
-    },
+    { preHandler: requireCeresRole('messenger', 'gm', 'ceo'), bodyLimit: 15 * 1024 * 1024 },
+    (req, reply) => uploadMedia(req, reply, 'legacy_receipt'),
+  );
+
+  app.post(
+    '/api/ceres/media',
+    { preHandler: requireCeresRole('messenger', 'gm', 'ceo'), bodyLimit: 15 * 1024 * 1024 },
+    (req, reply) => uploadMedia(req, reply),
+  );
+
+  app.get<{ Params: { id: string } }>(
+    '/api/ceres/media/:id/url',
+    { preHandler: requireCeresRole('messenger', 'gm', 'ceo') },
     async (req, reply) => {
-      const body = z.object({ dataB64: z.string().min(1), contentType: z.string().min(1) }).safeParse(req.body);
-      if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
-
-      const saved = await saveCeresReceipt(body.data.dataB64, body.data.contentType);
-      if (!saved) return reply.code(400).send({ error: 'invalid_image' });
-
-      const buf = Buffer.from(body.data.dataB64, 'base64');
-      // Duplicate check + OCR are independent reads off the just-saved upload — run
-      // them concurrently rather than back-to-back.
-      const [dup, ocrFields] = await Promise.all([
-        prisma.ceresExpense.findFirst({
-          where: { receiptSha: saved.sha256, status: { notIn: ['rejected', 'void'] } },
-          orderBy: { createdAt: 'desc' },
-        }),
-        readReceiptImage(buf, body.data.contentType).catch(() => ({ amount: '', vendor: '', dateText: '' })),
-      ]);
-
+      const media = await mediaVisibleToAgent(req.params.id, req.agent!);
+      if (!media) return reply.code(404).send({ error: 'not_found' });
+      const now = Date.now();
       return {
-        uploadId: saved.uploadId,
-        url: ceresReceiptUrl(reqBase(req), saved.uploadId),
-        ocr: ocrFields,
-        // Informational only — nothing is blocked. No ids: the messenger only needs
-        // the human summary of the earlier entry that used this same photo.
-        duplicate: dup ? { partyName: dup.partyName, amount: dup.amount, spentAt: dup.spentAt.toISOString() } : null,
+        url: ceresReceiptUrl(reqBase(req), media.id, now),
+        expiresAt: new Date(ceresReceiptExpiry(now) * 1000).toISOString(),
       };
     },
   );
@@ -97,6 +146,9 @@ export function p1Routes(app: FastifyInstance) {
     amount: z.string().refine(isValidAmount, 'invalid_amount'),
     spentAt: z.string().datetime().optional(),
     receiptUploadId: z.string().optional(),
+    ocrAmount: z.string().max(80).optional(),
+    ocrVendor: z.string().max(200).optional(),
+    ocrDate: z.string().max(80).optional(),
     note: z.string().max(600).optional(),
     partyId: z.string().optional(),
   });
@@ -130,9 +182,12 @@ export function p1Routes(app: FastifyInstance) {
     }
 
     let receiptSha = '';
+    let receiptMeta: Awaited<ReturnType<typeof readCeresReceiptMeta>> = null;
     if (b.receiptUploadId) {
-      const meta = await readCeresReceiptMeta(b.receiptUploadId);
-      if (meta) receiptSha = meta.sha256;
+      const media = await mediaCanBeAttachedBy(b.receiptUploadId, agent, ['legacy_receipt']);
+      if (!media) return reply.code(403).send({ error: 'media_not_owned' });
+      receiptMeta = await readCeresReceiptMeta(b.receiptUploadId);
+      receiptSha = media.sha256;
     }
 
     const expense = await prisma.ceresExpense.create({
@@ -148,6 +203,9 @@ export function p1Routes(app: FastifyInstance) {
         spentAt: b.spentAt ? new Date(b.spentAt) : new Date(),
         receiptUploadId: b.receiptUploadId ?? null,
         receiptSha,
+        ocrAmount: b.ocrAmount ?? receiptMeta?.ocrAmount ?? '',
+        ocrVendor: b.ocrVendor ?? receiptMeta?.ocrVendor ?? '',
+        ocrDate: b.ocrDate ?? receiptMeta?.ocrDate ?? '',
         note: b.note ?? '',
         status: 'pending',
       },
@@ -220,6 +278,9 @@ export function p1Routes(app: FastifyInstance) {
     amount: z.string().refine(isValidAmount, 'invalid_amount').optional(),
     spentAt: z.string().datetime().optional(),
     receiptUploadId: z.string().optional(),
+    ocrAmount: z.string().max(80).optional(),
+    ocrVendor: z.string().max(200).optional(),
+    ocrDate: z.string().max(80).optional(),
     note: z.string().max(600).optional(),
     reason: z.string().max(300).optional(),
   });
@@ -260,8 +321,14 @@ export function p1Routes(app: FastifyInstance) {
       // Swapping the receipt must also refresh receiptSha, or duplicate detection
       // would keep keying off the OLD image's hash. Empty when the meta is missing.
       if ('receiptUploadId' in changed) {
-        const meta = await readCeresReceiptMeta(changed.receiptUploadId as string);
-        changed.receiptSha = meta?.sha256 ?? '';
+        const uploadId = changed.receiptUploadId as string;
+        const media = await mediaCanBeAttachedBy(uploadId, agent, ['legacy_receipt']);
+        if (!media) return reply.code(403).send({ error: 'media_not_owned' });
+        const meta = await readCeresReceiptMeta(uploadId);
+        changed.receiptSha = media.sha256;
+        if (!('ocrAmount' in changed)) changed.ocrAmount = meta?.ocrAmount ?? '';
+        if (!('ocrVendor' in changed)) changed.ocrVendor = meta?.ocrVendor ?? '';
+        if (!('ocrDate' in changed)) changed.ocrDate = meta?.ocrDate ?? '';
       }
 
       // Editing a non-pending row after the fact writes a revision (never a silent
@@ -406,10 +473,9 @@ export function p1Routes(app: FastifyInstance) {
     }
     const party = await prisma.ceresParty.findUnique({ where: { id: body.data.partyId } });
     if (!party || !party.active) return reply.code(400).send({ error: 'invalid_party' });
-    const movement = await prisma.cashMovement.create({
-      data: {
-        accountId: 'pettyCash',
-        type: 'advance',
+    let movement;
+    try {
+      movement = await createLegacyAdvance({
         partyId: party.id,
         partyName: party.name,
         entity: body.data.entity ?? '',
@@ -417,8 +483,13 @@ export function p1Routes(app: FastifyInstance) {
         note: body.data.note ?? '',
         createdById: req.agent!.id,
         createdByName: req.agent!.name,
-      },
-    });
+      });
+    } catch (err) {
+      if (err instanceof CashLedgerError && err.code === 'insufficient_cash') {
+        return reply.code(409).send({ error: err.code, balance: err.balance?.toFixed(2) });
+      }
+      throw err;
+    }
     return { movement };
   });
 
@@ -441,6 +512,7 @@ export function p1Routes(app: FastifyInstance) {
       data: {
         accountId: 'pettyCash',
         type: 'refund',
+        direction: 'in',
         partyId: party.id,
         partyName: party.name,
         amount: body.data.amount,
@@ -473,6 +545,7 @@ export function p1Routes(app: FastifyInstance) {
       data: {
         accountId: 'pettyCash',
         type: body.data.type,
+        direction: 'in',
         amount: body.data.amount,
         note: body.data.note ?? '',
         createdById: req.agent!.id,
@@ -525,6 +598,8 @@ export function p1Routes(app: FastifyInstance) {
     let settlement;
     try {
       settlement = await prisma.$transaction(async (tx) => {
+        // Cash-out and close always acquire this same serialization lock first.
+        await lockPettyCash(tx);
         const already = await tx.ceresSettlement.findUnique({ where: { dayKey } });
         if (already) throw new CloseGuard('already_closed_today');
 
@@ -532,6 +607,7 @@ export function p1Routes(app: FastifyInstance) {
         if (pendingCount > 0) throw new CloseGuard('pending_exist', pendingCount);
 
         const { parties, box } = await computeBoard({ tx, cutoff });
+        if (box.balance < 0) throw new CloseGuard('negative_box_balance');
         const approvedIds = (
           await tx.ceresExpense.findMany({ where: { status: 'approved', settlementId: null }, select: { id: true } })
         ).map((e) => e.id);

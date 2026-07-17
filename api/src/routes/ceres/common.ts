@@ -1,6 +1,7 @@
 import { prisma } from '../../db/prisma.js';
 import { env } from '../../env.js';
-import { ceresReceiptUrl } from '../../ceres/receiptLink.js';
+import { CERES_EMBEDDED_MEDIA_URL_TTL_SECONDS, ceresReceiptUrl } from '../../ceres/receiptLink.js';
+import { cashBalanceFromMovements } from '../../ceres/requestMoney.js';
 
 // All Ceres day-math is Thai business time (UTC+7) regardless of server TZ — same
 // convention as Juno (see routes/juno.ts).
@@ -60,7 +61,9 @@ export function toExpenseRow(
     amountNum: num(e.amount),
     spentAt: e.spentAt.toISOString(),
     receiptUploadId: e.receiptUploadId,
-    receiptUrl: e.receiptUploadId ? ceresReceiptUrl(base, e.receiptUploadId) : null,
+    receiptUrl: e.receiptUploadId
+      ? ceresReceiptUrl(base, e.receiptUploadId, Date.now(), CERES_EMBEDDED_MEDIA_URL_TTL_SECONDS)
+      : null,
     ocrAmount: e.ocrAmount,
     ocrVendor: e.ocrVendor,
     ocrDate: e.ocrDate,
@@ -132,7 +135,7 @@ export async function computeBoard(opts?: { tx?: Db; cutoff?: Date }): Promise<{
   // money must keep appearing on the board and in settlement lines until its balance
   // clears, or its outstanding would be silently written off. The inclusion filter
   // below drops only inactive parties with no balance and no activity.
-  const [parties, lines, advances, refunds, approved, pending, deposits, topups, advancesAll, refundsAll] =
+  const [parties, lines, advances, refunds, approved, pending, allMovements] =
     await Promise.all([
       db.ceresParty.findMany({ orderBy: { sortOrder: 'asc' } }),
       settlement
@@ -142,10 +145,10 @@ export async function computeBoard(opts?: { tx?: Db; cutoff?: Date }): Promise<{
       db.cashMovement.findMany({ where: { type: 'refund', accountId: 'pettyCash', ...sinceWindow } }),
       db.ceresExpense.findMany({ where: { status: 'approved', settlementId: null } }),
       db.ceresExpense.findMany({ where: { status: 'pending' } }),
-      db.cashMovement.findMany({ where: { type: 'deposit', accountId: 'pettyCash', ...allTimeWindow }, select: { amount: true } }),
-      db.cashMovement.findMany({ where: { type: 'topup', accountId: 'pettyCash', ...allTimeWindow }, select: { amount: true } }),
-      db.cashMovement.findMany({ where: { type: 'advance', accountId: 'pettyCash', ...allTimeWindow }, select: { amount: true } }),
-      db.cashMovement.findMany({ where: { type: 'refund', accountId: 'pettyCash', ...allTimeWindow }, select: { amount: true } }),
+      db.cashMovement.findMany({
+        where: { accountId: 'pettyCash', ...allTimeWindow },
+        select: { amount: true, direction: true, type: true },
+      }),
     ]);
 
   const outstandingByParty = new Map<string, number>();
@@ -197,8 +200,7 @@ export async function computeBoard(opts?: { tx?: Db; cutoff?: Date }): Promise<{
     }
   }
 
-  const sum = (rows: { amount: string }[]) => rows.reduce((s, r) => s + num(r.amount), 0);
-  const balance = sum(deposits) + sum(topups) - sum(advancesAll) + sum(refundsAll);
+  const balance = cashBalanceFromMovements(allMovements);
   const floor = env.CERES_FLOOR;
   const belowFloor = balance < floor;
   const suggestedTopup = belowFloor ? Math.ceil((floor - balance + 1000) / 1000) * 1000 : 0;

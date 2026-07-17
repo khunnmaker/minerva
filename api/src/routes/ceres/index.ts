@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { requireCeresAuth } from '../../ceres/auth.js';
 import { buildLoginCards } from '../../auth/loginCards.js';
 import { readCeresReceiptMeta, readCeresReceiptFile } from '../../ceres/receiptStore.js';
-import { ceresReceiptToken } from '../../ceres/receiptLink.js';
+import { verifyCeresReceiptToken } from '../../ceres/receiptLink.js';
 import { p1Routes } from './p1.js';
 import { requestsRoutes } from './requests.js';
 import { ceoRoutes } from './ceo.js';
@@ -15,10 +15,10 @@ import { exportsRoutes } from './exports.js';
 export async function ceresRoutes(app: FastifyInstance) {
   // PUBLIC (tokenized) — a receipt photo, servable without a login (mirrors
   // /content/slip/:id). The token is an HMAC of the uploadId (unguessable).
-  app.get<{ Params: { id: string }; Querystring: { t?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { t?: string; expires?: string } }>(
     '/content/ceres-receipt/:id',
     async (req, reply) => {
-      if (!req.query.t || req.query.t !== ceresReceiptToken(req.params.id)) {
+      if (!verifyCeresReceiptToken(req.params.id, req.query.t, req.query.expires)) {
         return reply.code(403).send({ error: 'forbidden' });
       }
       const meta = await readCeresReceiptMeta(req.params.id);
@@ -26,7 +26,8 @@ export async function ceresRoutes(app: FastifyInstance) {
       if (!meta || !buf) return reply.code(404).send({ error: 'not_found' });
       return reply
         .header('content-type', meta.contentType)
-        .header('cache-control', 'private, max-age=3600')
+        .header('cache-control', 'private, max-age=600')
+        .header('x-content-type-options', 'nosniff')
         .send(buf);
     },
   );

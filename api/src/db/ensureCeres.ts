@@ -105,6 +105,40 @@ export async function ensureCeres(): Promise<void> {
       // eslint-disable-next-line no-console
       console.log(`[seed] created ${CATEGORIES.length} Ceres categories`);
     }
+
+    // Rolling-deploy repair: an older API instance may have accepted a legacy
+    // receipt between the migration backfill and this code reaching every node.
+    // Register referenced files idempotently; no historical row is changed.
+    const legacyReceipts = await prisma.ceresExpense.findMany({
+      where: { receiptUploadId: { not: null } },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        receiptUploadId: true,
+        receiptSha: true,
+        enteredById: true,
+        enteredByName: true,
+        createdAt: true,
+      },
+    });
+    const mediaById = new Map<string, (typeof legacyReceipts)[number] & { receiptUploadId: string }>();
+    for (const row of legacyReceipts) {
+      if (row.receiptUploadId && !mediaById.has(row.receiptUploadId)) {
+        mediaById.set(row.receiptUploadId, { ...row, receiptUploadId: row.receiptUploadId });
+      }
+    }
+    if (mediaById.size > 0) {
+      await prisma.ceresMedia.createMany({
+        data: [...mediaById.values()].map((row) => ({
+          id: row.receiptUploadId,
+          purpose: 'legacy_receipt',
+          sha256: row.receiptSha,
+          uploadedById: row.enteredById,
+          uploadedByName: row.enteredByName,
+          createdAt: row.createdAt,
+        })),
+        skipDuplicates: true,
+      });
+    }
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[seed] ensureCeres failed', err);

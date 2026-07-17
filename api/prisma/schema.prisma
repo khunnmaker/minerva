@@ -804,59 +804,69 @@ model CashAccount {
 }
 
 model CashMovement {
-  id            String   @id @default(cuid())
-  accountId     String   @default("pettyCash")
-  type          String // deposit | advance | refund | topup
-  partyId       String?
-  partyName     String   @default("") // snapshot
-  entity        String   @default("") // PROM | DENL | "" (movements need no entity)
-  amount        String   @default("")
-  note          String   @default("")
-  createdById   String?
-  createdByName String   @default("")
-  createdAt     DateTime @default(now())
+  id                  String   @id @default(cuid())
+  accountId           String   @default("pettyCash")
+  type                String // deposit | advance | refund | topup
+  partyId             String?
+  partyName           String   @default("") // snapshot
+  entity              String   @default("") // PROM | DENL | "" (movements need no entity)
+  amount              String   @default("")
+  note                String   @default("")
+  createdById         String?
+  createdByName       String   @default("")
+  createdAt           DateTime @default(now())
+  direction           String? // in | out; null legacy rows fall back to type mapping
+  requestId           String?
+  requestMoneyEventId String?
+  reversesMovementId  String?
 
   @@index([accountId, createdAt])
   @@index([partyId])
   @@index([type])
+  @@index([requestId])
+  @@index([requestMoneyEventId])
+  @@index([reversesMovementId])
 }
 
 model CeresExpense {
-  id              String    @id @default(cuid())
-  partyId         String?
-  partyName       String    @default("")
-  enteredById     String?
-  enteredByName   String    @default("")
-  entity          String    @default("PROM") // PROM | DENL
-  category        String    @default("")
-  customerNote    String    @default("") // "ลูกค้า: X" for shipping categories
-  amount          String    @default("")
-  spentAt         DateTime  @default(now())
-  receiptUploadId String?
-  receiptSha      String    @default("") // sha256 of the receipt image (duplicate detection)
-  ocrAmount       String    @default("")
-  ocrVendor       String    @default("")
-  ocrDate         String    @default("")
-  status          String    @default("pending") // pending | approved | settled | rejected | void
-  approvedById    String?
-  approvedAt      DateTime?
-  rejectReason    String    @default("")
+  id               String    @id @default(cuid())
+  partyId          String?
+  partyName        String    @default("")
+  enteredById      String?
+  enteredByName    String    @default("")
+  entity           String    @default("PROM") // PROM | DENL
+  category         String    @default("")
+  customerNote     String    @default("") // "ลูกค้า: X" for shipping categories
+  amount           String    @default("")
+  spentAt          DateTime  @default(now())
+  receiptUploadId  String?
+  receiptSha       String    @default("") // sha256 of the receipt image (duplicate detection)
+  ocrAmount        String    @default("")
+  ocrVendor        String    @default("")
+  ocrDate          String    @default("")
+  status           String    @default("pending") // pending | approved | settled | rejected | void
+  approvedById     String?
+  approvedAt       DateTime?
+  rejectReason     String    @default("")
   // void = soft-delete by gm/ceo; the row is kept (struck-through, excluded from every
   // total/board/settlement) so a closed day's books stay auditable. Never hard-deleted.
-  voidedById      String?
-  voidedAt        DateTime?
-  voidReason      String    @default("")
-  settlementId    String?
-  aiVerdict       String    @default("") // "" | ok | flagged (post-hoc AI review, wired later)
-  aiReviewId      String?
-  note            String    @default("")
-  createdAt       DateTime  @default(now())
+  voidedById       String?
+  voidedAt         DateTime?
+  voidReason       String    @default("")
+  settlementId     String?
+  aiVerdict        String    @default("") // "" | ok | flagged (post-hoc AI review, wired later)
+  aiReviewId       String?
+  note             String    @default("")
+  createdAt        DateTime  @default(now())
+  advanceRequestId String?
+  fundingLane      String    @default("cash") // cash | transfer | self_funded
 
   @@index([status])
   @@index([partyId])
   @@index([settlementId])
   @@index([createdAt])
   @@index([receiptSha])
+  @@index([advanceRequestId])
 }
 
 model CeresRevision {
@@ -874,15 +884,16 @@ model CeresRevision {
 }
 
 model CeresSettlement {
-  id           String                @id @default(cuid())
-  dayKey       String                @unique // Thai day "YYYY-MM-DD"; one close per day
+  id           String                       @id @default(cuid())
+  dayKey       String                       @unique // Thai day "YYYY-MM-DD"; one close per day
   closedById   String?
-  closedByName String                @default("")
-  boxBefore    String                @default("") // box balance before close (computed snapshot)
-  boxAfter     String                @default("")
-  note         String                @default("")
-  createdAt    DateTime              @default(now())
+  closedByName String                       @default("")
+  boxBefore    String                       @default("") // box balance before close (computed snapshot)
+  boxAfter     String                       @default("")
+  note         String                       @default("")
+  createdAt    DateTime                     @default(now())
   lines        CeresSettlementLine[]
+  requestLines CeresSettlementRequestLine[]
 }
 
 model CeresSettlementLine {
@@ -901,29 +912,117 @@ model CeresSettlementLine {
 }
 
 model CeresPaymentRequest {
-  id                  String    @id @default(cuid())
-  requestedById       String?
-  requestedByName     String    @default("")
-  entity              String    @default("PROM")
-  payee               String    @default("")
-  category            String    @default("")
-  amount              String    @default("")
-  detail              String    @default("")
-  recurringTemplateId String?
-  billPeriod          String    @default("") // e.g. "2026-06" for recurring
-  status              String    @default("requested") // requested | ai_approved | escalated | ceo_approved | rejected | cancelled | paid
-  aiReviewId          String?
-  decidedById         String?
-  decidedAt           DateTime?
-  decisionNote        String    @default("")
-  paidById            String?
-  paidAt              DateTime?
-  paidRef             String    @default("")
-  createdAt           DateTime  @default(now())
+  id                   String    @id @default(cuid())
+  requestedById        String?
+  requestedByName      String    @default("")
+  entity               String    @default("PROM")
+  payee                String    @default("")
+  category             String    @default("")
+  amount               String    @default("")
+  detail               String    @default("")
+  recurringTemplateId  String?
+  billPeriod           String    @default("") // e.g. "2026-06" for recurring
+  status               String    @default("requested") // requested | ai_approved | escalated | ceo_approved | rejected | cancelled | paid
+  aiReviewId           String?
+  decidedById          String?
+  decidedAt            DateTime?
+  decisionNote         String    @default("")
+  paidById             String?
+  paidAt               DateTime?
+  paidRef              String    @default("")
+  createdAt            DateTime  @default(now())
+  workflowVersion      Int       @default(1)
+  requestType          String    @default("legacy_payment")
+  approvalStatus       String    @default("legacy")
+  fulfillmentStatus    String    @default("legacy")
+  requesterPartyId     String?
+  requestPhotoUploadId String?
+  requestPhotoSha      String    @default("")
+  ocrAmount            String    @default("")
+  ocrVendor            String    @default("")
+  ocrDate              String    @default("")
+  aiScreenStatus       String    @default("legacy")
+  neeDecidedById       String?
+  neeDecidedByName     String    @default("")
+  neeDecidedAt         DateTime?
+  neeDecisionNote      String    @default("")
+  rowVersion           Int       @default(1)
+  updatedAt            DateTime  @updatedAt
+  voidedById           String?
+  voidedAt             DateTime?
+  voidReason           String    @default("")
 
   @@index([status])
   @@index([recurringTemplateId])
   @@index([createdAt])
+  @@index([workflowVersion, approvalStatus, createdAt])
+  @@index([requestedById, createdAt])
+  @@index([requestType, fulfillmentStatus])
+  @@index([requesterPartyId])
+  @@index([requestPhotoSha])
+}
+
+model CeresMedia {
+  id             String   @id // same value as the filesystem upload id
+  purpose        String // legacy_receipt | request_photo | reimbursement_receipt | purchase_receipt | transfer_slip | refund_slip
+  sha256         String
+  uploadedById   String?
+  uploadedByName String   @default("")
+  createdAt      DateTime @default(now())
+
+  @@index([uploadedById, createdAt])
+  @@index([sha256])
+}
+
+model CeresRequestEvent {
+  id             String   @id @default(cuid())
+  requestId      String
+  kind           String
+  actorId        String?
+  actorName      String   @default("")
+  note           String   @default("")
+  payload        Json
+  idempotencyKey String?  @unique
+  createdAt      DateTime @default(now())
+
+  @@index([requestId, createdAt])
+  @@index([kind])
+}
+
+model CeresRequestMoneyEvent {
+  id                      String   @id @default(cuid())
+  requestId               String
+  kind                    String // payment | purchase | refund | reversal
+  lane                    String // cash | transfer
+  amount                  String
+  transferSlipUploadId    String?
+  purchaseReceiptUploadId String?
+  cashMovementId          String?
+  reversesEventId         String?
+  createdById             String?
+  createdByName           String   @default("")
+  note                    String   @default("")
+  createdAt               DateTime @default(now())
+  idempotencyKey          String?  @unique
+
+  @@index([requestId, createdAt])
+  @@index([cashMovementId])
+  @@index([reversesEventId])
+}
+
+model CeresSettlementRequestLine {
+  id           String          @id @default(cuid())
+  settlementId String
+  settlement   CeresSettlement @relation(fields: [settlementId], references: [id])
+  requestId    String
+  moneyEventId String          @unique
+  kind         String
+  partyName    String          @default("")
+  amount       String
+  createdAt    DateTime        @default(now())
+
+  @@index([settlementId])
+  @@index([requestId])
 }
 
 model CeresRecurringTemplate {

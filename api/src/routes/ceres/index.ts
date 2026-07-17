@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { requireCeresAuth } from '../../ceres/auth.js';
-import { buildLoginCards } from '../../auth/loginCards.js';
 import { readCeresReceiptMeta, readCeresReceiptFile } from '../../ceres/receiptStore.js';
 import { verifyCeresReceiptToken } from '../../ceres/receiptLink.js';
+import { ceresLoginRoute } from './login.js';
 import { p1Routes } from './p1.js';
 import { requestsRoutes } from './requests.js';
 import { ceoRoutes } from './ceo.js';
@@ -32,9 +32,8 @@ export async function ceresRoutes(app: FastifyInstance) {
     },
   );
 
-  // PUBLIC — the name-card login list (alias of GET /api/auth/logins?app=ceres):
-  // Dr. M + Nee as password cards, then every ceres-granted employee as a PIN card.
-  app.get('/api/ceres/logins', async () => buildLoginCards('ceres'));
+  // Compatibility-only public name-card list for the explicit ?local=1 break-glass path.
+  ceresLoginRoute(app);
 
   // Everything else requires a Ceres-facing login (messenger | gm | ceo/supervisor).
   await app.register(async (scoped) => {

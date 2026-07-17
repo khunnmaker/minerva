@@ -15,7 +15,8 @@
     "demo:msg": "tsx src/scripts/send-test-message.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "ceres:integrity-check": "tsx src/scripts/checkCeresRequestIntegrity.ts"
+    "ceres:integrity-check": "tsx src/scripts/checkCeresRequestIntegrity.ts",
+    "ceres:sso-readiness": "tsx src/scripts/checkCeresSsoReadiness.ts"
   },
   "prisma": {
     "seed": "tsx src/scripts/seed.ts"

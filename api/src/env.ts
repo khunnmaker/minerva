@@ -56,8 +56,9 @@ const schema = z.object({
   FINANCE_SHEET_SECRET: z.string().default(''),
 
   // Ceres (expenses & petty cash) — see docs/CERES_BRIEF.md.
-  // Deprecated fallback (unified auth) — superseded by EMPLOYEE_PINS; remove after cutover.
-  CERES_MESSENGER_PINS: z.string().default(''),   // "ta:123456,arm:234567,…" slug:pin pairs
+  // Compatibility window only: exposes the app-local login card list used by ?local=1.
+  // Default ON for the first portal-only release; flip OFF after the observation window.
+  CERES_LOCAL_LOGIN_ENABLED: z.string().default('true'),
   CERES_FLOOR: z.coerce.number().default(40000),
   CERES_CEO_THRESHOLD: z.coerce.number().default(5000),
   // Rollback-only compatibility for pre-revamp stable receipt HMACs. New links

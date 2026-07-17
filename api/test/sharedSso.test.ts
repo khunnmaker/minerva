@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchWithSessionRenewal } from '../../packages/pantheon-ui/src/sso.ts';
+import {
+  fetchWithSessionRenewal,
+  isPantheonSite,
+  portalLoginUrl,
+  shouldRedirectToPortal,
+  wantsLocalLogin,
+} from '../../packages/pantheon-ui/src/sso.ts';
 
 interface Agent { id: string }
 
@@ -50,5 +56,31 @@ describe('shared session renewal fetch', () => {
 
     expect(response.status).toBe(401);
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('portal login redirect decisions', () => {
+  it('recognizes only the explicit local=1 break-glass query', () => {
+    expect(wantsLocalLogin('?local=1')).toBe(true);
+    expect(wantsLocalLogin('?local=true')).toBe(false);
+    expect(wantsLocalLogin('?redirect=x&local=0')).toBe(false);
+  });
+
+  it('recognizes the production suite domain without admitting lookalikes', () => {
+    expect(isPantheonSite('ceres.prominentdental.com')).toBe(true);
+    expect(isPantheonSite('prominentdental.com')).toBe(true);
+    expect(isPantheonSite('prominentdental.com.example.test')).toBe(false);
+  });
+
+  it('redirects only from the production suite while preserving local break-glass', () => {
+    expect(shouldRedirectToPortal('', 'ceres.prominentdental.com')).toBe(true);
+    expect(shouldRedirectToPortal('?local=1', 'ceres.prominentdental.com')).toBe(false);
+    expect(shouldRedirectToPortal('', 'localhost')).toBe(false);
+  });
+
+  it('builds a portal URL that preserves the complete Ceres return URL', () => {
+    const ceresUrl = 'https://ceres.prominentdental.com/requests/123?tab=mine#detail';
+    const redirect = portalLoginUrl('https://pantheon.prominentdental.com/', ceresUrl);
+    expect(redirect).toBe(`https://pantheon.prominentdental.com/?redirect=${encodeURIComponent(ceresUrl)}`);
   });
 });

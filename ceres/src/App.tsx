@@ -3,7 +3,14 @@ import { Loader2 } from 'lucide-react';
 import Login from './Login';
 import Ceres from './Ceres';
 import { getStoredAgent, getToken, setOnUnauthorized, bootstrap, type Agent } from './lib/api';
-import { PORTAL_URL_DEFAULT, clearSsoBounce, redirectToPortalLogin } from '@pantheon/ui';
+import {
+  PORTAL_URL_DEFAULT,
+  clearSsoBounce,
+  isPantheonSite,
+  portalLoginUrl,
+  redirectToPortalLogin,
+  wantsLocalLogin,
+} from '@pantheon/ui';
 
 const PORTAL_URL: string = import.meta.env.VITE_PORTAL_URL ?? PORTAL_URL_DEFAULT;
 
@@ -21,8 +28,7 @@ export default function App() {
   }, []);
 
   // Suite SSO: with no local token, try the shared parent-domain cookie once via /me before
-  // falling back to Login — so an already-signed-in teammate lands straight in the app instead
-  // of flashing the Login screen.
+  // handing a logged-out user to the portal-only entry component below.
   useEffect(() => {
     if (!booting) return;
     let alive = true;
@@ -30,8 +36,6 @@ export default function App() {
       .then((a) => {
         if (!alive) return;
         if (a) { clearSsoBounce(); setAgent(a); setBooting(false); return; }
-        // No suite session. Bounce to the central Pantheon login unless a guard says local.
-        if (redirectToPortalLogin(PORTAL_URL)) return;
         setBooting(false);
       })
       .catch(() => { if (alive) setBooting(false); });
@@ -46,7 +50,40 @@ export default function App() {
     );
   }
   if (!agent) {
-    return <Login onLogin={setAgent} />;
+    return wantsLocalLogin() || !isPantheonSite()
+      ? <Login onLogin={setAgent} />
+      : <PortalOnlyEntry />;
   }
-  return <Ceres agent={agent} onLogout={() => setAgent(null)} />;
+  return <Ceres agent={agent} onLogout={() => setAgent(null)} portalUrl={PORTAL_URL} />;
+}
+
+function PortalOnlyEntry() {
+  const [redirectBlocked, setRedirectBlocked] = useState(false);
+
+  useEffect(() => {
+    // Same one-bounce sessionStorage guard used by Apollo/Juno/Vesta: a failed portal return
+    // does not spin forever. Unlike those compatibility screens, Ceres never exposes account
+    // cards here; local development and the explicit ?local=1 path mount Login above.
+    if (!redirectToPortalLogin(PORTAL_URL)) setRedirectBlocked(true);
+  }, []);
+
+  if (!redirectBlocked) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center text-amber-600">
+        <Loader2 className="animate-spin" size={28} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center gap-3 px-4 text-center text-slate-700">
+      <p className="text-sm">กรุณาเข้าสู่ Ceres ผ่าน Pantheon</p>
+      <a
+        className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700"
+        href={portalLoginUrl(PORTAL_URL)}
+      >
+        ไปที่ Pantheon
+      </a>
+    </div>
+  );
 }

@@ -50,22 +50,41 @@ export async function fetchWithSessionRenewal<TAgent>(
   return response;
 }
 
-export function wantsLocalLogin(): boolean {
-  return new URLSearchParams(location.search).get('local') === '1';
+export function wantsLocalLogin(search = location.search): boolean {
+  return new URLSearchParams(search).get('local') === '1';
 }
 
-export function isPantheonSite(): boolean {
-  return location.hostname === 'prominentdental.com'
-    || location.hostname.endsWith('.prominentdental.com');
+export function isPantheonSite(hostname = location.hostname): boolean {
+  return hostname === 'prominentdental.com'
+    || hostname.endsWith('.prominentdental.com');
+}
+
+export function portalLoginUrl(portalUrl: string, returnUrl = location.href): string {
+  return `${portalUrl.replace(/\/$/, '')}/?redirect=${encodeURIComponent(returnUrl)}`;
+}
+
+export function shouldRedirectToPortal(
+  search: string,
+  hostname: string,
+  requirePantheonSite = true,
+): boolean {
+  if (wantsLocalLogin(search)) return false;
+  return !requirePantheonSite || isPantheonSite(hostname);
 }
 
 export function clearSsoBounce(): void {
   try { sessionStorage.removeItem(FLAG); } catch { /* storage may be unavailable */ }
 }
 
-export function redirectToPortalLogin(portalUrl: string): boolean {
-  if (wantsLocalLogin()) return false;
-  if (!isPantheonSite()) return false;
+export function redirectToPortalLogin(
+  portalUrl: string,
+  options: { requirePantheonSite?: boolean } = {},
+): boolean {
+  if (!shouldRedirectToPortal(
+    location.search,
+    location.hostname,
+    options.requirePantheonSite ?? true,
+  )) return false;
 
   try {
     if (sessionStorage.getItem(FLAG)) {
@@ -77,6 +96,6 @@ export function redirectToPortalLogin(portalUrl: string): boolean {
     return false;
   }
 
-  location.replace(portalUrl + '/?redirect=' + encodeURIComponent(location.href));
+  location.replace(portalLoginUrl(portalUrl));
   return true;
 }

@@ -26,9 +26,13 @@ function bearer(req: FastifyRequest): string | null {
 // agm/employee need the 'ceres' grant; gm/supervisor are implicit).
 export const requireCeresAuth: preHandlerHookHandler = async (req: FastifyRequest, reply: FastifyReply) => {
   const agent = await authedAgentFromToken(bearer(req), ['supervisor', 'gm', 'agm', 'employee']);
-  if (!agent || ceresRole(agent) === null) {
+  if (!agent) {
     return reply.code(401).send({ error: 'unauthorized' });
   }
+  // Authentication succeeded, but this live account has no Ceres persona/grant. Keep this
+  // distinct from 401 so the portal can present its access-denied state instead of asking the
+  // user to sign in again.
+  if (ceresRole(agent) === null) return reply.code(403).send({ error: 'forbidden', need: 'ceres' });
   req.agent = agent;
 };
 

@@ -39,10 +39,12 @@ describe('slip transfer timestamp', () => {
     expect(resolveSlipTransferAt('04/07/2569 15:54:05', arrivedAt)).toEqual({
       value: '04/07/2026 15:54',
       fromSlip: true,
+      parseFailed: false,
     });
     expect(resolveSlipTransferAt('   ', arrivedAt)).toEqual({
       value: '04/07/2026 15:56',
       fromSlip: false,
+      parseFailed: false,
     });
   });
 });

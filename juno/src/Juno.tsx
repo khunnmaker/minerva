@@ -57,6 +57,20 @@ const DEFAULT_WHT_RATE: WhtRate = 3; // owner spec: default to 3% once WHT is tu
 // 2dp round to the nearest satang — matches the house `amountsEqual` convention server-side.
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+function transferAtIsOver30DaysFrom(value: string, reference: Date | string): boolean {
+  const match = value.trim().match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})$/);
+  const referenceMs = typeof reference === 'string' ? new Date(reference).getTime() : reference.getTime();
+  if (!match || Number.isNaN(referenceMs)) return false;
+  const [, dd, mm, yyyy, hh, min] = match;
+  const wallTime = Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd), Number(hh), Number(min));
+  const check = new Date(wallTime);
+  if (check.getUTCFullYear() !== Number(yyyy) || check.getUTCMonth() !== Number(mm) - 1 || check.getUTCDate() !== Number(dd)
+    || Number(hh) > 23 || Number(min) > 59) return false;
+  const bangkokInstant = wallTime - 7 * 60 * 60 * 1000;
+  return Math.abs(bangkokInstant - referenceMs) > 30 * DAY_MS;
+}
+
 // Thai-locale date/time display for the inbox + drawer (house pattern, vesta/src/Stock.tsx).
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: '2-digit' });
 const fmtDateTime = (iso: string) => new Date(iso).toLocaleString('th-TH', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -901,6 +915,7 @@ function AddPaymentModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
 
   const amountNum = parseFloat(amount.replace(/[^\d.-]/g, ''));
   const valid = Number.isFinite(amountNum) && amountNum > 0 && customerName.trim() !== '';
+  const transferAtFar = method === 'manual_transfer' && transferAtIsOver30DaysFrom(transferAt, new Date());
 
   async function pickSlip(file: File | undefined) {
     if (!file) return;
@@ -1086,6 +1101,11 @@ function AddPaymentModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
                 <span className={label}>วันเวลาโอน</span>
                 <input value={transferAt} onChange={(e) => setTransferAt(e.target.value)} placeholder="27/06/2026 14:30" className={input} />
               </label>
+              {transferAtFar && (
+                <div className="col-span-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
+                  เวลาโอนห่างจากวันที่รับเกิน 30 วัน — ตรวจสอบเดือน
+                </div>
+              )}
             </div>
             <label className="block">
               <span className={label}>เลขอ้างอิง</span>
@@ -1217,6 +1237,7 @@ function EditPaymentModal({ payment, onClose, onSaved }: {
   const amountValid = Number.isFinite(amountNum) && amountNum > 0;
   const valid = amountValid && customerName.trim() !== '';
   const amountChanged = amount.trim() !== payment.amount;
+  const transferAtFar = transferAtIsOver30DaysFrom(transferAt, payment.createdAt);
 
   async function save() {
     if (!valid || saving) return;
@@ -1300,6 +1321,11 @@ function EditPaymentModal({ payment, onClose, onSaved }: {
             <span className={label}>วันเวลาโอน</span>
             <input value={transferAt} onChange={(e) => setTransferAt(e.target.value)} placeholder="27/06/2026 14:30" className={input} />
           </label>
+          {transferAtFar && (
+            <div className="col-span-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
+              เวลาโอนห่างจากวันที่รับเกิน 30 วัน — ตรวจสอบเดือน
+            </div>
+          )}
         </div>
         <label className="block">
           <span className={label}>เลขอ้างอิง</span>

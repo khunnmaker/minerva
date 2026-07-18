@@ -22,6 +22,20 @@ import AppSwitcher from './AppSwitcher';
 // Portal-back link uses the canonical Pantheon domain unless build-time env overrides it.
 const PORTAL_URL: string = import.meta.env.VITE_PORTAL_URL ?? 'https://pantheon.prominentdental.com';
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+function transferAtIsOver30DaysFrom(value: string, referenceIso: string): boolean {
+  const match = value.trim().match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})$/);
+  const reference = new Date(referenceIso).getTime();
+  if (!match || Number.isNaN(reference)) return false;
+  const [, dd, mm, yyyy, hh, min] = match;
+  const wallTime = Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd), Number(hh), Number(min));
+  const check = new Date(wallTime);
+  if (check.getUTCFullYear() !== Number(yyyy) || check.getUTCMonth() !== Number(mm) - 1 || check.getUTCDate() !== Number(dd)
+    || Number(hh) > 23 || Number(min) > 59) return false;
+  const bangkokInstant = wallTime - 7 * 60 * 60 * 1000;
+  return Math.abs(bangkokInstant - reference) > 30 * DAY_MS;
+}
+
 // LINE OA account id for the per-customer OA Manager deep-link. The read-sync chip's link uses
 // the OA-native oaChatId (from the extension), so chat.line.biz/{oa}/chat/{oaChatId} now resolves.
 const LINE_OA_ID = (import.meta.env.VITE_LINE_OA_ID as string | undefined) ?? 'Uaaa328e6464049ed51e23b78c2184456';
@@ -442,6 +456,8 @@ function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClo
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState('');
   const [ocrAmount, setOcrAmount] = useState(''); // server-truth amount read off the slip
+  const [transferAtParseFailed, setTransferAtParseFailed] = useState(false);
+  const [lineArrivedAt, setLineArrivedAt] = useState('');
   const [f, setF] = useState({ nickname: '', code: '', realName: '', amount: '', bank: '', transferAt: '', ref: '', taxInvoice: '', note: '' });
   // Slip fields the OCR filled are LOCKED (the slip is the source of truth — staff must not
   // alter money data; a mis-read is corrected by finance against the slip image, not here).
@@ -455,6 +471,8 @@ function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClo
         if (!cancelled) {
           setF((p) => ({ ...p, ...r }));
           setOcrAmount(r.amount);
+          setTransferAtParseFailed(r.transferAtParseFailed);
+          setLineArrivedAt(r.lineArrivedAt);
           setLocked({ realName: !!r.realName, amount: !!r.amount, bank: !!r.bank, transferAt: r.transferAtFromSlip, ref: !!r.ref });
         }
       })
@@ -464,6 +482,7 @@ function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClo
   }, [messageId]);
 
   const amountEdited = !!ocrAmount && !!f.amount.trim() && f.amount.trim() !== ocrAmount;
+  const transferAtFar = transferAtIsOver30DaysFrom(f.transferAt, lineArrivedAt);
 
   async function send() {
     if (sending || !f.amount.trim()) return;
@@ -496,6 +515,14 @@ function FinanceModal({ messageId, onClose, onSent }: { messageId: string; onClo
           {field('จำนวนเงิน', 'amount', 'เช่น 1500', locked.amount)}
           {field('บัญชีที่รับเงิน', 'bank', 'กสิกร / ไทยพาณิชย์', locked.bank)}
           {field('วันเวลาโอน', 'transferAt', '27/06/2026 14:30', locked.transferAt)}
+          {transferAtParseFailed && (
+            <div className="col-span-2 text-[10px] text-amber-700">อ่านวันที่จากสลิปไม่สำเร็จ ตรวจสอบ/แก้ไขเอง</div>
+          )}
+          {transferAtFar && (
+            <div className="col-span-2 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
+              เวลาโอนห่างจากวันที่รับเกิน 30 วัน — ตรวจสอบเดือน
+            </div>
+          )}
           {field('เลขอ้างอิง', 'ref', '', locked.ref)}
         </div>
         <div className="text-[10px] text-slate-400 leading-snug">ข้อมูลที่อ่านได้จากสลิปถูกล็อกไว้ แก้ไขไม่ได้ — การเงินจะตรวจกับสลิปจริงอีกครั้ง</div>

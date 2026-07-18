@@ -164,6 +164,8 @@ export async function messageRoutes(app: FastifyInstance) {
     return {
       amount: fields.amount, bank: fields.bank, transferAt: transferAt.value, ref: fields.ref,
       transferAtFromSlip: transferAt.fromSlip,
+      transferAtParseFailed: transferAt.parseFailed,
+      lineArrivedAt: msg.createdAt.toISOString(),
       nickname: customer ? await resolveCustomerName(customer) : '',
       code: customer?.code ?? '', // customer code (ร001) — shown read-only in the finance card
       realName: fields.senderName, // from the SLIP (sender), not the random LINE name

@@ -22,6 +22,7 @@ import { readChequeFromBuffer, readSlipFromBuffer } from '../llm/readSlip.js';
 import { parseReReceipts, decodeExpressBytes } from '../finance/parseReReceipts.js';
 import { computeReRow } from '../finance/reRecon.js';
 import { normalizeSlipDate } from '../finance/normalize.js';
+import { nearAmountTolerance, reSearchCore, searchedAmount } from '../finance/rePaymentSearch.js';
 import {
   buildDiscrepancyComponents,
   componentByPaymentId,
@@ -1899,7 +1900,102 @@ export async function junoRoutes(app: FastifyInstance) {
         ref: s.p.ref,
         dayDistance: Number(s.days.toFixed(2)),
         exactAmount: s.exact,
+        amountDiff: Number((txnAmountNum(s.p.amount) - txnAmountNum(txn.amount)).toFixed(2)),
         nameScore: Number(s.nameScore.toFixed(2)),
+      })),
+    };
+  });
+
+  // GET /api/juno/bank/txns/:id/payment-search?q= — live, server-side candidate search for
+  // the bank-first panel. It deliberately returns the same row shape as suggestions so the
+  // client uses one checkbox/selection/match path. `status: verified` is the suggestion rule:
+  // confirmed/recorded payments are not linkable, while a verified payment already linked to
+  // another line remains eligible for legitimate many-to-many reconciliation.
+  const bankPaymentSearchQuerySchema = z.object({ q: z.string().trim().min(2).max(120) });
+  app.get<{ Params: { id: string } }>('/api/juno/bank/txns/:id/payment-search', async (req, reply) => {
+    const parsed = bankPaymentSearchQuerySchema.safeParse(req.query ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_query' });
+
+    const txn = await prisma.bankTxn.findUnique({ where: { id: req.params.id } });
+    if (!txn) return reply.code(404).send({ error: 'not_found' });
+
+    const term = parsed.data.q;
+    const reCore = reSearchCore(term);
+    const amount = searchedAmount(term);
+
+    // REs are stored bare today, but normalize the column too so legacy RE-/dash formatting
+    // cannot hide a candidate. Amount is a house String field, so PostgreSQL performs the
+    // bounded numeric-nearness lookup and Prisma applies the final lifecycle/link filters.
+    const [reHits, amountHits] = await Promise.all([
+      reCore
+        ? prisma.$queryRaw<{ id: string }[]>`
+            SELECT "id" FROM "Payment"
+            WHERE "status" = 'verified'
+              AND regexp_replace(lower("reNumber"), '[^0-9/]', '', 'g') LIKE ${`%${reCore}%`}
+            LIMIT 60`
+        : Promise.resolve([]),
+      amount !== null
+        ? prisma.$queryRaw<{ id: string }[]>`
+            SELECT "id" FROM "Payment"
+            WHERE "status" = 'verified'
+              AND regexp_replace("amount", '[^0-9.]', '', 'g') ~ '^[0-9]+([.][0-9]+)?$'
+              AND abs((regexp_replace("amount", '[^0-9.]', '', 'g'))::numeric - ${amount}) <= ${nearAmountTolerance(amount)}
+            ORDER BY abs((regexp_replace("amount", '[^0-9.]', '', 'g'))::numeric - ${amount})
+            LIMIT 60`
+        : Promise.resolve([]),
+    ]);
+    const hitIds = [...new Set([...reHits, ...amountHits].map((row) => row.id))];
+    const textSearch = [
+      { receiptName: { contains: term, mode: 'insensitive' as const } },
+      { customerName: { contains: term, mode: 'insensitive' as const } },
+      { senderName: { contains: term, mode: 'insensitive' as const } },
+    ];
+    const candidates = await prisma.payment.findMany({
+      where: {
+        status: 'verified',
+        bankMatches: { none: { bankTxnId: txn.id } },
+        OR: [...textSearch, ...(hitIds.length ? [{ id: { in: hitIds } }] : [])],
+      },
+      select: {
+        id: true, reNumber: true, chequeNo: true, receiptName: true, customerName: true,
+        senderName: true, amount: true, transferAt: true, createdAt: true, ref: true,
+      },
+      take: 60,
+    });
+
+    const termLower = term.toLocaleLowerCase('th-TH');
+    const txnAmount = txnAmountNum(txn.amount);
+    const scored = candidates.map((payment) => {
+      const paymentAmount = txnAmountNum(payment.amount);
+      const amountDistance = amount === null ? Number.POSITIVE_INFINITY : Math.abs(paymentAmount - amount);
+      const normalizedPaymentRe = payment.reNumber.replace(/[^0-9/]/g, '');
+      const exactRe = !!reCore && normalizedPaymentRe.split('/').includes(reCore);
+      const partialRe = !!reCore && normalizedPaymentRe.includes(reCore);
+      const nameMatch = [payment.receiptName, payment.customerName, payment.senderName]
+        .some((name) => name.toLocaleLowerCase('th-TH').includes(termLower));
+      const exactSearchAmount = amount !== null && amountDistance < 0.005;
+      const tier = exactRe ? 5 : partialRe ? 4 : nameMatch ? 3 : exactSearchAmount ? 2 : 1;
+      const days = dayDistance(txn.txnAt, paymentTimestamp(payment.transferAt, payment.createdAt));
+      return { payment, tier, amountDistance, days };
+    });
+    scored.sort((a, b) => b.tier - a.tier || a.amountDistance - b.amountDistance || a.days - b.days);
+
+    return {
+      results: scored.slice(0, 30).map(({ payment, days }) => ({
+        paymentId: payment.id,
+        reNumber: payment.reNumber,
+        chequeNo: payment.chequeNo,
+        receiptName: payment.receiptName,
+        customerName: payment.customerName,
+        senderName: payment.senderName,
+        amount: payment.amount,
+        ref: payment.ref,
+        dayDistance: Number(days.toFixed(2)),
+        exactAmount: amountsEqual(txn.amount, payment.amount),
+        amountDiff: Number((txnAmountNum(payment.amount) - txnAmount).toFixed(2)),
+        nameScore: Number(maxNameSimilarity(txn.payerName || txn.details, [
+          payment.senderName, payment.customerName, payment.receiptName,
+        ]).toFixed(2)),
       })),
     };
   });

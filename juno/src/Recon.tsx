@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import {
   baht, fileToBase64, previewBankImport, applyBankImport, getBankTxns, getBankSuggestions,
+  searchBankPayments,
   matchBankTxn, unmatchBankTxn, setBankTxnRef, confirmBankTxn, confirmAllMatched, getBankSummary,
   getPaymentsRecon, getPaymentTxnSuggestions, matchPaymentTxns,
   type BankTxn, type BankTxnStatusFilter, type BankImportPreview,
@@ -488,7 +489,12 @@ function StatusBadge({ txn }: { txn: BankTxn }) {
 function TxnDetail({ txn, onChanged }: { txn: BankTxn; onChanged: (updated?: BankTxn) => void }) {
   const [suggestions, setSuggestions] = useState<BankSuggestion[]>([]);
   const [loadingSug, setLoadingSug] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<BankSuggestion[]>([]);
+  const [loadingSearch, setLoadingSearch] = useState(false);
+  const [searchError, setSearchError] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const candidateCache = useRef(new Map<string, BankSuggestion>());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [refText, setRefText] = useState(txn.refText);
@@ -497,15 +503,54 @@ function TxnDetail({ txn, onChanged }: { txn: BankTxn; onChanged: (updated?: Ban
   useEffect(() => {
     setLoadingSug(true);
     getBankSuggestions(txn.id)
-      .then((r) => setSuggestions(r.suggestions))
+      .then((r) => {
+        for (const suggestion of r.suggestions) candidateCache.current.set(suggestion.paymentId, suggestion);
+        setSuggestions(r.suggestions);
+      })
       .catch(() => setSuggestions([]))
       .finally(() => setLoadingSug(false));
   }, [txn.id]);
 
-  function toggle(id: string) {
+  useEffect(() => {
+    const query = searchQuery.trim();
+    if (query.length < 2) {
+      setSearchResults([]);
+      setLoadingSearch(false);
+      setSearchError('');
+      return;
+    }
+
+    const controller = new AbortController();
+    setLoadingSearch(true);
+    setSearchError('');
+    const timer = setTimeout(() => {
+      searchBankPayments(txn.id, query, controller.signal)
+        .then((result) => {
+          for (const candidate of result.results) candidateCache.current.set(candidate.paymentId, candidate);
+          setSearchResults(result.results);
+        })
+        .catch((err: Error) => {
+          if (err.name !== 'AbortError') {
+            setSearchResults([]);
+            setSearchError('ค้นหาไม่สำเร็จ — ลองใหม่อีกครั้ง');
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setLoadingSearch(false);
+        });
+    }, 300);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [searchQuery, txn.id]);
+
+  function toggle(candidate: BankSuggestion) {
+    candidateCache.current.set(candidate.paymentId, candidate);
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      if (next.has(candidate.paymentId)) next.delete(candidate.paymentId); else next.add(candidate.paymentId);
       return next;
     });
   }
@@ -565,11 +610,22 @@ function TxnDetail({ txn, onChanged }: { txn: BankTxn; onChanged: (updated?: Ban
   }
 
   const runningSum = txn.linkedSum + [...selected].reduce((s, id) => {
-    const sug = suggestions.find((x) => x.paymentId === id);
-    return s + (sug ? parseFloat(sug.amount || '0') : 0);
+    const candidate = candidateCache.current.get(id);
+    return s + (candidate ? parseFloat(candidate.amount || '0') : 0);
   }, 0);
   const linkedIds = new Set(txn.links.map((l) => l.paymentId));
   const availableSuggestions = suggestions.filter((s) => !linkedIds.has(s.paymentId));
+  const suggestionIds = new Set(suggestions.map((s) => s.paymentId));
+  // Keep a checked search result visible even if FIN changes/clears the query before saving.
+  const selectedSearchRows = [...selected]
+    .map((id) => candidateCache.current.get(id))
+    .filter((candidate): candidate is BankSuggestion => !!candidate && !suggestionIds.has(candidate.paymentId) && !linkedIds.has(candidate.paymentId));
+  const availableSearchResults = [...selectedSearchRows, ...searchResults]
+    .filter((candidate, index, all) =>
+      !suggestionIds.has(candidate.paymentId) &&
+      !linkedIds.has(candidate.paymentId) &&
+      all.findIndex((row) => row.paymentId === candidate.paymentId) === index,
+    );
 
   return (
     <div className="px-4 pb-4 pt-1 bg-slate-50 border-t border-slate-100 text-sm">
@@ -614,21 +670,41 @@ function TxnDetail({ txn, onChanged }: { txn: BankTxn; onChanged: (updated?: Ban
         {loadingSug ? (
           <div className="text-xs text-slate-400 py-2"><Loader2 className="animate-spin inline" size={14} /> กำลังค้นหา…</div>
         ) : availableSuggestions.length === 0 ? (
-          <div className="text-xs text-slate-400 py-1">ไม่พบใบเสร็จที่ตรงกัน — ลองใช้อ้างอิงอื่นด้านล่าง</div>
+          <div className="text-xs text-slate-400 py-1">ไม่พบใบเสร็จที่ตรงกัน — ลองค้นหา RE ด้านล่าง</div>
         ) : (
           <div className="space-y-1 max-h-52 overflow-y-auto">
             {availableSuggestions.map((s) => (
-              <label key={s.paymentId} className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white border border-slate-200 hover:border-emerald-300 cursor-pointer text-xs">
-                <input type="checkbox" checked={selected.has(s.paymentId)} onChange={() => toggle(s.paymentId)} className="accent-emerald-600" />
-                <span className="font-semibold text-emerald-700 shrink-0">RE {s.reNumber || '—'}</span>
-                <span className="shrink-0">{baht(parseFloat(s.amount || '0'))}</span>
-                {s.exactAmount && <span className="px-1 py-0.5 rounded bg-emerald-50 text-emerald-600 shrink-0">ยอดตรง</span>}
-                {s.chequeNo && <span className="text-slate-400 shrink-0">เช็ค {s.chequeNo}</span>}
-                {s.ref && <span className="text-slate-400 font-mono shrink-0 truncate max-w-[120px]" title="เลขอ้างอิงบนสลิป">อ้างอิง {s.ref}</span>}
-                <span className="text-slate-500 truncate flex-1">{s.receiptName || s.customerName}</span>
-                <span className="text-slate-400 shrink-0">±{s.dayDistance.toFixed(1)}ว</span>
-              </label>
+              <BankCandidateRow key={s.paymentId} candidate={s} checked={selected.has(s.paymentId)} onToggle={() => toggle(s)} />
             ))}
+          </div>
+        )}
+        <div className="relative mt-2">
+          <Search size={13} className="absolute left-2.5 top-2 text-slate-400" />
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="ค้นหา RE / ชื่อ / จำนวน"
+            className="w-full pl-7 pr-8 py-1.5 rounded-lg border border-slate-300 bg-white text-xs focus:outline-none focus:ring-2 focus:ring-emerald-400"
+          />
+          {loadingSearch && <Loader2 size={13} className="absolute right-2.5 top-2 animate-spin text-slate-400" />}
+        </div>
+        {searchError && <div className="text-xs text-rose-600 mt-1">{searchError}</div>}
+        {searchQuery.trim().length >= 2 && !loadingSearch && !searchError && searchResults.length === 0 && (
+          <div className="text-xs text-slate-400 py-1">ไม่พบ RE ที่ค้นหา</div>
+        )}
+        {availableSearchResults.length > 0 && (
+          <div className="mt-1">
+            <div className="text-[11px] text-slate-400 mb-1">ผลการค้นหา</div>
+            <div className="space-y-1 max-h-52 overflow-y-auto">
+              {availableSearchResults.map((candidate) => (
+                <BankCandidateRow
+                  key={candidate.paymentId}
+                  candidate={candidate}
+                  checked={selected.has(candidate.paymentId)}
+                  onToggle={() => toggle(candidate)}
+                />
+              ))}
+            </div>
           </div>
         )}
         {selected.size > 0 && (
@@ -669,6 +745,29 @@ function TxnDetail({ txn, onChanged }: { txn: BankTxn; onChanged: (updated?: Ban
         {txn.expressConfirmedAt ? <><CheckCircle2 size={13} className="text-emerald-600" /> ยืนยัน Express แล้ว</> : <><CheckCircle2 size={13} /> ยืนยัน Express</>}
       </button>
     </div>
+  );
+}
+
+function BankCandidateRow({ candidate, checked, onToggle }: {
+  candidate: BankSuggestion; checked: boolean; onToggle: () => void;
+}) {
+  return (
+    <label className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white border border-slate-200 hover:border-emerald-300 cursor-pointer text-xs">
+      <input type="checkbox" checked={checked} onChange={onToggle} className="accent-emerald-600" />
+      <span className="font-semibold text-emerald-700 shrink-0">RE {candidate.reNumber || '—'}</span>
+      <span className="shrink-0">{baht(parseFloat(candidate.amount || '0'))}</span>
+      {candidate.exactAmount ? (
+        <span className="px-1 py-0.5 rounded bg-emerald-50 text-emerald-600 shrink-0">ยอดตรง</span>
+      ) : (
+        <span className="px-1 py-0.5 rounded bg-amber-50 text-amber-700 shrink-0">
+          ต่าง {candidate.amountDiff > 0 ? '+' : '-'}{baht(Math.abs(candidate.amountDiff))}
+        </span>
+      )}
+      {candidate.chequeNo && <span className="text-slate-400 shrink-0">เช็ค {candidate.chequeNo}</span>}
+      {candidate.ref && <span className="text-slate-400 font-mono shrink-0 truncate max-w-[120px]" title="เลขอ้างอิงบนสลิป">อ้างอิง {candidate.ref}</span>}
+      <span className="text-slate-500 truncate flex-1">{candidate.receiptName || candidate.customerName}</span>
+      <span className="text-slate-400 shrink-0">±{candidate.dayDistance.toFixed(1)}ว</span>
+    </label>
   );
 }
 

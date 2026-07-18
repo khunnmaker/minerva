@@ -611,6 +611,7 @@ export interface BankSuggestion {
   ref: string; // slip reference (OCR อ้างอิง) — eyeball-check vs the bank line's txn id
   dayDistance: number;
   exactAmount: boolean;
+  amountDiff: number;
   nameScore: number;
 }
 
@@ -706,6 +707,11 @@ export const getBankTxns = (f: BankTxnFilter) =>
 
 export const getBankSuggestions = (txnId: string) =>
   authed<{ suggestions: BankSuggestion[] }>(`/api/juno/bank/txns/${txnId}/suggestions`);
+
+export const searchBankPayments = (txnId: string, q: string, signal?: AbortSignal) => {
+  const params = new URLSearchParams({ q });
+  return authed<{ results: BankSuggestion[] }>(`/api/juno/bank/txns/${txnId}/payment-search?${params.toString()}`, { signal });
+};
 
 export const getPaymentsRecon = (state: PaymentReconState = 'pending', q?: string, limit?: number, from?: string, to?: string) => {
   const p = new URLSearchParams({ state });

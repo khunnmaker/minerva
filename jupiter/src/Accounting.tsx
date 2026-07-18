@@ -21,11 +21,18 @@ import {
   type BackfillSummary,
   type BackfillStatus,
   type Agent,
+  type LedgerMode,
+  type JournalEntry,
   logout,
 } from './lib/api';
 import { useHashTab } from '@pantheon/ui';
 import AiCost from './AiCost';
 import { Chip, Kpi } from './ui';
+import { BorBadge } from './accounting/shared';
+import JournalEntries from './accounting/JournalEntries';
+import JournalEntryForm from './accounting/JournalEntryForm';
+import EntryDetail from './accounting/EntryDetail';
+import LedgerReports from './accounting/LedgerReports';
 
 const PORTAL_URL = import.meta.env.VITE_PORTAL_URL ?? 'https://pantheon.prominentdental.com';
 
@@ -65,14 +72,19 @@ const toNum = (s: string) => {
   return Number.isNaN(n) ? 0 : n;
 };
 
-type Tab = 'overview' | 'ledger' | 'close' | 'ai-cost';
+// Phase 2 tab order (docs/JUPITER_P2_PLAN.md §7): ภาพรวม / สมุดรายวัน (new double-entry
+// journal) / รายการรับเข้าเดิม (renamed from "บันทึกรายการ" — the Phase-1 JupiterTxn cockpit,
+// unchanged component) / รายงานบัญชี (renamed from "ปิดรอบบัญชี" — splits into the Phase-1
+// tax-register cards for cockpit-mode companies and the new GL/TB/partner-ledger reports for
+// book-of-record companies) / ต้นทุน AI.
+type Tab = 'overview' | 'journal' | 'txns' | 'reports' | 'ai-cost';
 // The whole component is supervisor-only (gated by the caller in App.tsx) with no further
-// per-tab role split inside it, so the base 3 tabs are always valid. "ต้นทุน AI" hits a
+// per-tab role split inside it, so the base 4 tabs are always valid. "ต้นทุน AI" hits a
 // supervisor-only endpoint underneath (GET /api/jupiter/token-usage), so — since `jupiter`
 // app access can in principle be granted to a non-supervisor agent (agm/employee `apps`
 // list) — that one tab is additionally gated on agent.role here, both in the tab list
 // (useHashTab falls back to the default for a now-invalid hash) and in the nav button.
-const ACCT_TABS: Tab[] = ['overview', 'ledger', 'close'];
+const ACCT_TABS: Tab[] = ['overview', 'journal', 'txns', 'reports'];
 
 export default function Accounting({ agent, onLogout }: { agent: Agent; onLogout: () => void }) {
   const month = currentMonth();
@@ -96,6 +108,15 @@ export default function Accounting({ agent, onLogout }: { agent: Agent; onLogout
     const m = new Map(companies.map((c) => [c.code, c.name]));
     return (code: string) => m.get(code) ?? code;
   }, [companies]);
+
+  // Phase-2 ledgerMode routing, from the real per-company ledgerMode the companies route now
+  // returns; unknown codes defensively fall back to 'cockpit' (today's Phase-1 behavior).
+  const modeOf = useMemo(() => {
+    const m = new Map(companies.map((c) => [c.code, c.ledgerMode]));
+    return (code: string): LedgerMode => m.get(code) ?? 'cockpit';
+  }, [companies]);
+  const cockpitCompanies = useMemo(() => companies.filter((c) => modeOf(c.code) !== 'book_of_record'), [companies, modeOf]);
+  const bookOfRecordCompanies = useMemo(() => companies.filter((c) => modeOf(c.code) === 'book_of_record'), [companies, modeOf]);
 
   // Load the shared reference + month data once (and when the month is fixed to current).
   useEffect(() => {
@@ -196,6 +217,7 @@ export default function Accounting({ agent, onLogout }: { agent: Agent; onLogout
           {companies.map((c) => (
             <Chip key={c.code} active={company === c.code} onClick={() => setCompany(c.code)} dot={c.color}>
               {c.code}
+              {modeOf(c.code) === 'book_of_record' && <BorBadge />}
             </Chip>
           ))}
         </div>
@@ -205,8 +227,9 @@ export default function Accounting({ agent, onLogout }: { agent: Agent; onLogout
       <div className="bg-white border-b border-[#E9E4F2]">
         <div className="max-w-4xl mx-auto px-3 sm:px-4 flex gap-0.5">
           <TabBtn active={tab === 'overview'} onClick={() => setTab('overview')}>ภาพรวม</TabBtn>
-          <TabBtn active={tab === 'ledger'} onClick={() => setTab('ledger')}>บันทึกรายการ</TabBtn>
-          <TabBtn active={tab === 'close'} onClick={() => setTab('close')}>ปิดรอบบัญชี</TabBtn>
+          <TabBtn active={tab === 'journal'} onClick={() => setTab('journal')}>สมุดรายวัน</TabBtn>
+          <TabBtn active={tab === 'txns'} onClick={() => setTab('txns')}>รายการรับเข้าเดิม</TabBtn>
+          <TabBtn active={tab === 'reports'} onClick={() => setTab('reports')}>รายงานบัญชี</TabBtn>
           {isSupervisor && (
             <TabBtn active={tab === 'ai-cost'} onClick={() => setTab('ai-cost')}>ต้นทุน AI</TabBtn>
           )}
@@ -245,17 +268,29 @@ export default function Accounting({ agent, onLogout }: { agent: Agent; onLogout
                 setCompany={setCompany}
               />
             )}
-            {tab === 'ledger' && (
+            {tab === 'journal' && (
+              <JournalBook companies={companies} company={company} />
+            )}
+            {tab === 'txns' && (
               <Ledger
-                companies={companies}
+                companies={cockpitCompanies}
                 company={company}
                 txns={txns}
                 colorOf={colorOf}
                 nameOf={nameOf}
                 onChanged={reloadAll}
+                modeOf={modeOf}
               />
             )}
-            {tab === 'close' && <Close registers={registers} company={company} colorOf={colorOf} />}
+            {tab === 'reports' && (
+              <ReportsTab
+                company={company}
+                cockpitCompanies={cockpitCompanies}
+                bookOfRecordCompanies={bookOfRecordCompanies}
+                registers={registers}
+                colorOf={colorOf}
+              />
+            )}
             {tab === 'ai-cost' && isSupervisor && <AiCost />}
           </>
         )}
@@ -267,6 +302,81 @@ export default function Accounting({ agent, onLogout }: { agent: Agent; onLogout
       <footer className="bg-white border-t border-[#E9E4F2] text-center text-[11px] text-[#726C86] py-3 px-4">
         Phase 1 · บัญชีรวมกลุ่ม — แทนที่ Odoo, จ่ายที่เดียว · PROM ดึงจาก Juno/Ceres/Vesta (Phase 1b) · อีก 4 บริษัทบันทึกตรงนี้
       </footer>
+    </div>
+  );
+}
+
+/* ─────────────────────── สมุดรายวัน (journal-entry navigation) ─────────────────────── */
+// Thin routing/navigation glue between the three Phase-2 ledger components — the plan calls for
+// this to live in Accounting.tsx ("company-mode routing and navigation") while the substantial
+// UI stays in ./accounting/*.tsx.
+
+type JournalView = { mode: 'list' } | { mode: 'detail'; id: string } | { mode: 'create' } | { mode: 'edit'; entry: JournalEntry };
+
+function JournalBook({ companies, company }: { companies: AcctCompany[]; company: string }) {
+  const [view, setView] = useState<JournalView>({ mode: 'list' });
+
+  if (view.mode === 'create' || view.mode === 'edit') {
+    return (
+      <JournalEntryForm
+        companies={companies}
+        defaultCompany={company === ALL ? (companies[0]?.code ?? '') : company}
+        existing={view.mode === 'edit' ? view.entry : null}
+        onSaved={(entry) => setView({ mode: 'detail', id: entry.id })}
+        onCancel={() => setView(view.mode === 'edit' ? { mode: 'detail', id: view.entry.id } : { mode: 'list' })}
+      />
+    );
+  }
+  if (view.mode === 'detail') {
+    return (
+      <EntryDetail
+        entryId={view.id}
+        companies={companies}
+        onBack={() => setView({ mode: 'list' })}
+        onEdit={(entry) => setView({ mode: 'edit', entry })}
+      />
+    );
+  }
+  return (
+    <JournalEntries
+      companies={companies}
+      company={company === ALL ? '' : company}
+      onOpenEntry={(id) => setView({ mode: 'detail', id })}
+      onCreateNew={() => setView({ mode: 'create' })}
+    />
+  );
+}
+
+/* ─────────────────────── รายงานบัญชี (cockpit registers ∥ ledger reports) ─────────────────────── */
+// Splits by company ledgerMode: cockpit-mode companies keep today's tax-register cards
+// (Close, unchanged logic) exactly; book-of-record companies get the new GL/TB/partner-ledger
+// reports instead, per docs/JUPITER_P2_PLAN.md §7. Both sections are simply hidden when the
+// current company filter excludes their group, so picking a single company shows only the
+// relevant one — and since every company is 'cockpit' until a real cutover, this is visually
+// identical to today's "ปิดรอบบัญชี" tab right now.
+function ReportsTab({
+  company, cockpitCompanies, bookOfRecordCompanies, registers, colorOf,
+}: {
+  company: string;
+  cockpitCompanies: AcctCompany[];
+  bookOfRecordCompanies: AcctCompany[];
+  registers: AcctRegisters | null;
+  colorOf: (code: string) => string;
+}) {
+  const showRegisters = cockpitCompanies.length > 0 && (company === ALL || cockpitCompanies.some((c) => c.code === company));
+  const showLedgerReports = bookOfRecordCompanies.length > 0 && (company === ALL || bookOfRecordCompanies.some((c) => c.code === company));
+
+  return (
+    <div className="space-y-5">
+      {showRegisters && (
+        <Close registers={registers} company={company} colorOf={colorOf} onlyCompanies={cockpitCompanies.map((c) => c.code)} />
+      )}
+      {showLedgerReports && (
+        <LedgerReports companies={bookOfRecordCompanies} initialCompany={company === ALL ? undefined : company} />
+      )}
+      {!showRegisters && !showLedgerReports && (
+        <div className="text-sm text-[#726C86] bg-white border border-[#E9E4F2] rounded-xl px-4 py-6 text-center">ไม่มีข้อมูลสำหรับบริษัทนี้</div>
+      )}
     </div>
   );
 }
@@ -416,13 +526,15 @@ function Ledger({
   colorOf,
   nameOf,
   onChanged,
+  modeOf,
 }: {
-  companies: AcctCompany[];
+  companies: AcctCompany[]; // cockpit-mode companies only — the AI/manual creation forms must never target a book-of-record company
   company: string;
   txns: AcctTxn[];
   colorOf: (code: string) => string;
   nameOf: (code: string) => string;
   onChanged: () => void;
+  modeOf: (code: string) => LedgerMode;
 }) {
   const [text, setText] = useState('');
   const [parsing, setParsing] = useState(false);
@@ -478,8 +590,20 @@ function Ledger({
     'จ่ายค่าแล็บ DentalPort 36,000 DENC',
   ];
 
+  // Once a company's ledgerMode is book_of_record, its accounting activity moves to the manual
+  // journal-entry form ("สมุดรายวัน" tab) — this Phase-1 intake stays visible ("existing /txns
+  // data remains visible") but stops accepting new AI/manual entries for that company.
+  const isBookOfRecordSelected = company !== ALL && modeOf(company) === 'book_of_record';
+
   return (
     <section>
+      {isBookOfRecordSelected && (
+        <div className="mb-4 text-[12.5px] text-[#4C1D95] bg-[#F3EEFE] border border-[#E3D8FB] rounded-xl px-4 py-2.5 font-semibold">
+          รายการรับเข้าเดิม — ไม่ใช่สมุดบัญชี · บริษัทนี้ใช้สมุดบัญชีหลักแล้ว ดูรายการบัญชีจริงที่แท็บ “สมุดรายวัน” และรายงานที่แท็บ “รายงานบัญชี”
+        </div>
+      )}
+      {!isBookOfRecordSelected && (
+      <>
       {/* AI natural-language entry */}
       <div className="bg-white border-[1.5px] border-[#D9C9FB] rounded-xl p-3.5 mb-4 shadow-[0_2px_12px_rgba(109,40,217,0.06)]">
         <div className="flex items-center gap-2 font-bold text-[#4C1D95] text-[13.5px] mb-2.5">
@@ -565,6 +689,8 @@ function Ledger({
           />
         )}
       </div>
+      </>
+      )}
 
       {/* ledger table */}
       <div className="bg-white border border-[#E9E4F2] rounded-xl overflow-hidden">
@@ -726,9 +852,21 @@ function ManualForm({ companies, defaultCompany, onSaved }: { companies: AcctCom
 
 /* ─────────────────────────── CLOSE TAB ─────────────────────────── */
 
-function Close({ registers, company, colorOf }: { registers: AcctRegisters | null; company: string; colorOf: (code: string) => string }) {
+function Close({
+  registers, company, colorOf, onlyCompanies,
+}: {
+  registers: AcctRegisters | null;
+  company: string;
+  colorOf: (code: string) => string;
+  // Restrict to these company codes on top of the `company` filter — used by ReportsTab to
+  // keep book-of-record companies out of the Phase-1 tax-register cards (§7: "replace Phase-1
+  // tax-register cards ... for book-of-record companies"). Omitted, this is unchanged from
+  // Phase 1.
+  onlyCompanies?: string[];
+}) {
   if (!registers) return null;
-  const rows = company === 'ALL' ? registers.companies : registers.companies.filter((c) => c.code === company);
+  let rows = company === 'ALL' ? registers.companies : registers.companies.filter((c) => c.code === company);
+  if (onlyCompanies) rows = rows.filter((c) => onlyCompanies.includes(c.code));
 
   return (
     <section>

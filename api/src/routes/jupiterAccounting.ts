@@ -70,7 +70,7 @@ export async function jupiterAccountingRoutes(app: FastifyInstance) {
     const rows = await prisma.jupiterCompany.findMany({
       where: { active: true },
       orderBy: [{ sortOrder: 'asc' }, { code: 'asc' }],
-      select: { code: true, name: true, nameTh: true, kind: true, color: true },
+      select: { code: true, name: true, nameTh: true, kind: true, color: true, ledgerMode: true, ledgerCutoverDate: true, ledgerLockDate: true },
     });
     return rows;
   });

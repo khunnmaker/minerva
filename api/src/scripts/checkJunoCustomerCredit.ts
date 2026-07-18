@@ -89,6 +89,20 @@ await db.transaction(async (tx) => { await grantCredit(tx, payment('grant') as a
 check(db.entries.filter((entry) => entry.paymentId === 'grant' && entry.kind === 'grant').length === 1, 'repeated supervisor confirm leaves one unchanged grant');
 check(db.entries.find((entry) => entry.paymentId === 'grant')?.amountSatang === 10_000, 'repeated confirm cannot enlarge a grant');
 
+const wrongTransferDb = new MemoryCreditDb();
+const wrongTransferPayment = { ...payment('wrong-grant', 'C-WRONG'), wrongTransferAt: new Date() };
+const wrongTransferDiff = effectivePaidSatang({
+  amount: '500.00', whtAmount: '', creditUsed: '', wrongTransferAt: wrongTransferPayment.wrongTransferAt,
+});
+await wrongTransferDb.transaction((tx) => grantCredit(tx, wrongTransferPayment as any, wrongTransferDiff, 'supervisor'));
+check(wrongTransferDiff === 50_000, 'wrong-transfer credit diff is the full payment amount against expected zero');
+check(wrongTransferDb.entries.find((entry) => entry.paymentId === 'wrong-grant')?.amountSatang === 50_000, 'wrong-transfer credit confirmation grants the full payment amount');
+await wrongTransferDb.transaction((tx) => replaceSpend(tx, payment('wrong-dependent', 'C-WRONG') as any, 1_000, 'fin'));
+try {
+  await wrongTransferDb.transaction((tx) => removeGrant(tx, 'wrong-grant'));
+  check(false, 'spent wrong-transfer grant cannot be un-confirmed');
+} catch (error) { check(isCode(error, 'credit_grant_spent'), 'wrong-transfer grant keeps the standard spent-grant lifecycle lock'); }
+
 try {
   await db.transaction((tx) => grantCredit(tx, payment('keyless', '', '') as any, 100, 'supervisor'));
   check(false, 'keyless confirm is rejected');

@@ -1027,7 +1027,7 @@ export async function junoRoutes(app: FastifyInstance) {
         const current = await tx.payment.findUnique({ where: { id: req.params.id } });
         if (!current) return null;
         if (current.status === 'void') return 'void_locked' as const;
-        if (current.wrongTransferAt && body.data.resolution !== '' && body.data.resolution !== 'refund') {
+        if (current.wrongTransferAt && !['', 'refund', 'credit'].includes(body.data.resolution)) {
           return 'wrong_transfer_refund_only' as const;
         }
         await removeGrant(

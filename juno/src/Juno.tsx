@@ -86,9 +86,11 @@ type Stage = { n: number; label: string; cls: string };
 function stageOf(p: Payment): Stage {
   if (p.status === 'void') return { n: 0, label: 'ยกเลิก', cls: 'bg-slate-200 text-slate-500 line-through' };
   if (p.wrongTransfer) {
+    if (p.discConfirmedAt && p.discResolution === 'credit') return { n: 4, label: 'เก็บเป็นเครดิตแล้ว', cls: 'bg-emerald-100 text-emerald-700' };
     if (p.discConfirmedAt) return { n: 4, label: 'โอนคืนแล้ว', cls: 'bg-emerald-100 text-emerald-700' };
+    if (p.discResolution === 'credit') return { n: 3, label: 'เก็บเป็นเครดิต · รอ CEO ยืนยัน', cls: 'bg-amber-100 text-amber-700' };
     if (p.discResolution === 'refund') return { n: 3, label: 'โอนคืนแล้ว · รอ CEO ยืนยัน', cls: 'bg-amber-100 text-amber-700' };
-    return { n: 2, label: 'รอโอนเงินคืน', cls: 'bg-rose-100 text-rose-700' };
+    return { n: 2, label: 'โอนผิด · รอจัดการ', cls: 'bg-rose-100 text-rose-700' };
   }
   if (p.status === 'recorded') return { n: 4, label: 'ยืนยันใน Express', cls: 'bg-emerald-100 text-emerald-700' };
   if (p.status === 'received') return { n: 1, label: 'รอตรวจ', cls: 'bg-slate-100 text-slate-600' };

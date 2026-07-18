@@ -186,6 +186,81 @@ describe('Juno wrong-transfer routes', () => {
     mocks.role.value = 'supervisor';
     const confirmed = await app.inject({ method: 'POST', url: '/api/juno/payments/payment-1/disc-confirm', payload: { confirmed: true } });
     expect(confirmed.statusCode).toBe(200);
+    expect(mocks.customerCreditEntry.create).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('accepts refund/credit/reset resolution but still rejects chase and writeoff', async () => {
+    const app = await server();
+    const wrong = basePayment({ status: 'verified', wrongTransferAt: new Date(), discExpected: '0' });
+    mocks.payment.findUnique.mockResolvedValue(wrong);
+
+    for (const resolution of ['credit', 'refund', ''] as const) {
+      const response = await app.inject({
+        method: 'POST', url: '/api/juno/payments/payment-1/disc-resolve', payload: { resolution },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(mocks.payment.update).toHaveBeenLastCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ discResolution: resolution }),
+      }));
+    }
+
+    for (const resolution of ['chase', 'writeoff'] as const) {
+      const response = await app.inject({
+        method: 'POST', url: '/api/juno/payments/payment-1/disc-resolve', payload: { resolution },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toBe('wrong_transfer_refund_only');
+    }
+
+    const expectedEdit = await app.inject({
+      method: 'POST', url: '/api/juno/payments/payment-1/discrepancy', payload: { expected: '1.00' },
+    });
+    expect(expectedEdit.statusCode).toBe(409);
+    expect(expectedEdit.json().error).toBe('wrong_transfer_expected_locked');
+    await app.close();
+  });
+
+  it('grants the full wrong-transfer payment as credit, requires a customer, and blocks spent-grant un-confirm', async () => {
+    const app = await server();
+    mocks.role.value = 'supervisor';
+    const wrong = basePayment({
+      status: 'verified', wrongTransferAt: new Date(), discExpected: '0', discResolution: 'credit',
+      amount: '500.00', whtRate: 0, whtAmount: '', creditUsed: '',
+    });
+    mocks.payment.findUnique.mockResolvedValue(wrong);
+    mocks.payment.findMany.mockResolvedValue([wrong]);
+    const confirmed = await app.inject({
+      method: 'POST', url: '/api/juno/payments/payment-1/disc-confirm', payload: { confirmed: true },
+    });
+    expect(confirmed.statusCode).toBe(200);
+    expect(mocks.customerCreditEntry.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ paymentId: 'payment-1', kind: 'grant', amountSatang: 50_000 }),
+    }));
+    expect(mocks.syncPaymentToJupiter).not.toHaveBeenCalled();
+
+    const keyless = { ...wrong, customerCode: '', customerName: '' };
+    mocks.payment.findUnique.mockResolvedValue(keyless);
+    mocks.payment.findMany.mockResolvedValue([keyless]);
+    mocks.customerCreditEntry.findUnique.mockResolvedValue(null);
+    const missingCustomer = await app.inject({
+      method: 'POST', url: '/api/juno/payments/payment-1/disc-confirm', payload: { confirmed: true },
+    });
+    expect(missingCustomer.statusCode).toBe(409);
+    expect(missingCustomer.json().error).toBe('credit_customer_required');
+
+    mocks.payment.findUnique.mockResolvedValue({ ...wrong, discConfirmedAt: new Date(), discConfirmedBy: 'boss' });
+    mocks.customerCreditEntry.findUnique.mockResolvedValue({
+      id: 'grant-1', customerKey: 'C1', customerCode: 'C1', customerName: 'Customer',
+      kind: 'grant', amountSatang: 50_000, paymentId: 'payment-1', createdBy: 'boss',
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    mocks.customerCreditEntry.aggregate.mockResolvedValue({ _sum: { amountSatang: 40_000 } });
+    const unconfirmed = await app.inject({
+      method: 'POST', url: '/api/juno/payments/payment-1/disc-confirm', payload: { confirmed: false },
+    });
+    expect(unconfirmed.statusCode).toBe(409);
+    expect(unconfirmed.json().error).toBe('credit_grant_spent');
     await app.close();
   });
 
@@ -195,7 +270,10 @@ describe('Juno wrong-transfer routes', () => {
     await app.inject({ method: 'GET', url: '/api/juno/summary' });
     expect(mocks.payment.count.mock.calls.every(([arg]) => arg?.where?.wrongTransferAt === null)).toBe(true);
 
-    const wrongTransfer = basePayment({ status: 'verified', wrongTransferAt: new Date(), wrongTransferBy: 'fin' });
+    const wrongTransfer = basePayment({
+      status: 'verified', wrongTransferAt: new Date(), wrongTransferBy: 'fin', discExpected: '0',
+      discResolution: 'credit', discResolvedAt: new Date(), discConfirmedAt: new Date(),
+    });
     mocks.payment.findMany.mockResolvedValueOnce([wrongTransfer]);
     const list = await app.inject({ method: 'GET', url: '/api/juno/payments' });
     expect(list.json().payments).toEqual([expect.objectContaining({ id: 'payment-1', wrongTransfer: true })]);

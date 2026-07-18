@@ -12,13 +12,14 @@ const { once } = require('node:events');
 // Matching ignores case and repeated whitespace, but never uses substrings/fuzzy guesses.
 const CONFIG = Object.freeze({
   companyNameToCode: Object.freeze({
-    'Prominent': 'PROM',
-    'Tonmai Residence': 'TONR',
-    'DentalPort Dental Clinic': 'DENC',
-    'DentalPort Dental Lab': 'DENL',
-    'KPKF': 'KPKF',
+    'Appoint Alliance': 'APPT',
+    'TONMAI RESIDENCE COMPANY LIMITED': 'TONR',
+    'DENTALPORT DENTAL CLINIC COMPANY LIMITED': 'DENC',
+    'PROMINENT COMPANY LIMITED': 'PROM',
+    'DENTALPORT COMPANY LIMITED': 'DENL',
+    'KHUN PHUA KHUN LIMITED PARTNERSHIP': 'KPKF',
   }),
-  requiredCompanyCodes: Object.freeze(['PROM', 'TONR', 'DENC', 'DENL', 'KPKF']),
+  requiredCompanyCodes: Object.freeze(['APPT', 'TONR', 'DENC', 'PROM', 'DENL', 'KPKF']),
   batchSize: 2000,
   maxRetries: 6,
   requestTimeoutMs: 120000,
@@ -228,6 +229,39 @@ function safeRpcMessage(value, secret) {
   return message.slice(0, 2000);
 }
 
+async function groupSums(rpc, model, domain, groupbyField, aggregateFields, context) {
+  const aggregates = aggregateFields.map((field) => `${field}:sum`);
+  let rows;
+  try {
+    rows = await rpc.execute(model, 'formatted_read_group', [
+      domain, [groupbyField], [...aggregates, '__count'],
+    ], { context });
+  } catch (error) {
+    const message = safeRpcMessage(error);
+    if (!message.includes('formatted_read_group') || !/does not exist/i.test(message)) throw error;
+    rows = await rpc.execute(model, 'read_group', [
+      domain, [groupbyField, ...aggregates], [groupbyField],
+    ], { lazy: false, context });
+  }
+
+  const ownValue = (row, keys, fallback) => {
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(row, key)) return row[key];
+    }
+    return fallback;
+  };
+  return (Array.isArray(rows) ? rows : []).map((row) => {
+    const normalized = { [groupbyField]: ownValue(row, [groupbyField], false) };
+    for (const field of aggregateFields) {
+      normalized[field] = ownValue(row, [`${field}:sum`, field], 0);
+    }
+    normalized.__count = ownValue(row, [
+      '__count', `${groupbyField}_count`, `${groupbyField}:count`, `${groupbyField}:count_distinct`,
+    ], 0);
+    return normalized;
+  });
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -265,7 +299,7 @@ async function discoverCompanies(rpc) {
   const missing = CONFIG.requiredCompanyCodes.filter((code) => !actual.has(code));
   const extra = [...actual].filter((code) => !CONFIG.requiredCompanyCodes.includes(code));
   if (missing.length || extra.length || mapped.length !== CONFIG.requiredCompanyCodes.length) {
-    throw new Error(`Company mapping must resolve exactly the five required codes. Missing: ${missing.join(', ') || 'none'}; ` +
+    throw new Error(`Company mapping must resolve exactly the six required codes. Missing: ${missing.join(', ') || 'none'}; ` +
       `unexpected: ${extra.join(', ') || 'none'}; discovered records: ${mapped.length}.`);
   }
   return mapped;
@@ -690,9 +724,9 @@ async function deriveCompany({ rpc, runDir, company, allIds, accounts, precision
   await writeCsv(path.join(dir, 'trial_balance_client.csv'), TB_HEADERS, clientRows);
 
   const domain = [['company_id', '=', company.id], ['parent_state', '=', 'posted']];
-  const grouped = await rpc.execute('account.move.line', 'read_group', [
-    domain, ['account_id', 'debit:sum', 'credit:sum', 'balance:sum'], ['account_id'],
-  ], { lazy: false, context });
+  const grouped = await groupSums(
+    rpc, 'account.move.line', domain, 'account_id', ['debit', 'credit', 'balance'], context
+  );
   const serverGroups = new Map();
   for (const row of grouped) {
     const accountId = relationId(row.account_id);
@@ -812,13 +846,18 @@ async function smoke(rpc, companies) {
     }
   }
   console.table(rows);
-  const attachmentGroups = await rpc.execute('ir.attachment', 'read_group', [
-    [], ['res_model'], ['res_model'],
-  ], { lazy: false, context: { allowed_company_ids: allIds, active_test: false } });
-  console.log('Attachment metadata counts by res_model (files are not downloaded):');
-  console.table(attachmentGroups.map((row) => ({
-    res_model: row.res_model || '(none)', count: row.__count || row.res_model_count || 0,
-  })));
+  try {
+    const attachmentGroups = await groupSums(
+      rpc, 'ir.attachment', [], 'res_model', [],
+      { allowed_company_ids: allIds, active_test: false }
+    );
+    console.log('Attachment metadata counts by res_model (files are not downloaded):');
+    console.table(attachmentGroups.map((row) => ({
+      res_model: row.res_model || '(none)', count: row.__count || 0,
+    })));
+  } catch (error) {
+    console.warn(`WARNING: attachment metadata check skipped: ${safeRpcMessage(error)}`);
+  }
 }
 
 function timestampForPath(date = new Date()) {
@@ -936,9 +975,11 @@ async function runFull(rpc, companies, args) {
 }
 
 class FakeRpc {
-  constructor(rows, { failOnSearchRead = null } = {}) {
+  constructor(rows, { failOnSearchRead = null, groupMethod = null, groupRows = [] } = {}) {
     this.rows = rows;
     this.failOnSearchRead = failOnSearchRead;
+    this.groupMethod = groupMethod;
+    this.groupRows = groupRows;
     this.searchReadCalls = 0;
   }
 
@@ -955,6 +996,10 @@ class FakeRpc {
       const domain = args[0];
       const cursor = domain.find((term) => term[0] === 'id' && term[1] === '>')?.[2] || 0;
       return this.rows.filter((row) => row.id > cursor).slice(0, kwargs.limit);
+    }
+    if (method === 'formatted_read_group' || method === 'read_group') {
+      if (method === this.groupMethod) return this.groupRows;
+      throw new Error(`The method '${model}.${method}' does not exist`);
     }
     throw new Error(`FakeRpc does not implement ${model}.${method}`);
   }
@@ -1043,6 +1088,23 @@ async function selftest() {
     assert(grouped.length === 2, 'TB must contain two posted accounts');
     assert(grouped.find((x) => x.account_id === 10).debit === '125.25', 'TB debit grouping');
     assert(grouped.find((x) => x.account_id === 20).credit === '125.25', 'TB credit grouping');
+    const formattedGroupRows = [
+      { account_id: [10, '1000 Cash'], 'debit:sum': 125.25, 'credit:sum': 0, 'balance:sum': 125.25, __count: 2 },
+      { account_id: [20, '2000 Equity'], 'debit:sum': 0, 'credit:sum': 125.25, 'balance:sum': -125.25, __count: 2 },
+    ];
+    const legacyGroupRows = [
+      { account_id: [10, '1000 Cash'], debit: 125.25, credit: 0, balance: 125.25, account_id_count: 2 },
+      { account_id: [20, '2000 Equity'], debit: 0, credit: 125.25, balance: -125.25, account_id_count: 2 },
+    ];
+    const groupArgs = ['fixture.line', [], 'account_id', ['debit', 'credit', 'balance'], {}];
+    const formattedSums = await groupSums(
+      new FakeRpc(rows, { groupMethod: 'formatted_read_group', groupRows: formattedGroupRows }), ...groupArgs
+    );
+    const legacySums = await groupSums(
+      new FakeRpc(rows, { groupMethod: 'read_group', groupRows: legacyGroupRows }), ...groupArgs
+    );
+    assert(JSON.stringify(formattedSums) === JSON.stringify(legacySums),
+      'formatted_read_group and read_group must normalize to identical sums');
     const serverGroups = new Map([...groups].map(([id, group]) => [id, { ...group }]));
     serverGroups.get(10).debit -= 1n;
     serverGroups.get(10).balance -= 1n;
@@ -1069,7 +1131,7 @@ async function selftest() {
 
     const checkpoint = await readJsonIfExists(path.join(scratch, '.checkpoints', checkpointName('TEST', 'fixture.line')));
     assert(checkpoint.complete && checkpoint.rows === 5 && checkpoint.lastId === 5, 'checkpoint must finish at id 5');
-    console.log('SELFTEST PASS: pager, both crash/resume paths, field omissions, TB grouping/diffs, ' +
+    console.log('SELFTEST PASS: pager, both crash/resume paths, field omissions, both group APIs, TB grouping/diffs, ' +
       'JSONL writer, CSV BOM/escaping, and checkpoints.');
   } finally {
     const resolved = path.resolve(scratch);
@@ -1120,5 +1182,5 @@ if (require.main === module) {
 }
 
 module.exports = {
-  CONFIG, RpcClient, extractModel, addTbLine, tbRows, writeCsv, writeJsonl, selftest,
+  CONFIG, RpcClient, groupSums, extractModel, addTbLine, tbRows, writeCsv, writeJsonl, selftest,
 };

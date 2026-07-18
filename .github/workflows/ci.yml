@@ -3,8 +3,7 @@ name: CI
 # Monorepo CI. Install ALWAYS runs `npm ci` at the repo root (workspaces — never inside a
 # workspace dir) and every command targets its workspace with `npm -w ...`. api = typecheck +
 # the vitest regression tests (deterministic — no DB/network, fixtures only). frontends =
-# typecheck + production build for the workspaces wired into the suite portal (olympus +
-# pantheon).
+# typecheck + production build for the workspaces wired into the suite portal (pantheon).
 on:
   push:
   pull_request:
@@ -35,7 +34,7 @@ jobs:
         run: npm -w api test
 
   frontends:
-    name: olympus + pantheon — typecheck + build
+    name: pantheon — typecheck + build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,12 +47,6 @@ jobs:
 
       - name: Install dependencies (repo root)
         run: npm ci
-
-      - name: Olympus typecheck
-        run: npm -w olympus run typecheck
-
-      - name: Olympus build
-        run: npm -w olympus run build
 
       - name: Pantheon typecheck
         run: npm -w pantheon run typecheck

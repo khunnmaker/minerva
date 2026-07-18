@@ -36,7 +36,6 @@ import { mercuryRoutes } from './routes/mercury/index.js';
 import { oaSyncRoutes } from './routes/oaSync.js';
 import { apolloRoutes } from './routes/apollo.js';
 import { startApolloSchedulers } from './apollo/scheduler.js';
-import { hestiaRoutes } from './routes/hestia.js';
 
 // Raw body is needed to verify the LINE webhook signature.
 declare module 'fastify' {
@@ -107,7 +106,6 @@ async function buildServer() {
   await app.register(mercuryRoutes);
   await app.register(oaSyncRoutes);
   await app.register(apolloRoutes);
-  await app.register(hestiaRoutes);
   startApolloSchedulers(app.log);
 
   return app;

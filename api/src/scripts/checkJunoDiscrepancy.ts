@@ -8,7 +8,7 @@ import {
   mismatchedMultiPaymentComponentCount,
   normalizeReCore,
 } from '../finance/discrepancy.js';
-import { computeReRow } from '../finance/reRecon.js';
+import { buildReReconIndex, computeReRow } from '../finance/reRecon.js';
 import { displayReceiptReference, normalizeReceiptReference } from '../finance/receiptReferences.js';
 
 let failed = 0;
@@ -44,7 +44,13 @@ for (const [label, amount, expectedDiff] of [
   const [component] = buildDiscrepancyComponents([p], [receipt('6900010', '5000.00')]);
   check(component.diffSatang === 0, '2,000 cash + 3,000 credit settles a 5,000 RE');
   check(grossSatang(p) === 200_000 && effectivePaidSatang(p) === 500_000, 'credit changes effective paid but preserves raw gross');
-  check(computeReRow('5000.00', [p], new Map([['6900010', '5000.00']])).status === 'matched', 'GET /re helper matches cash plus credit');
+  check(
+    computeReRow('6900010', '5000.00', buildReReconIndex(
+      [{ amount: p.amount, whtAmount: p.whtAmount, creditUsed: p.creditUsed, reNumbers: p.reNumbers }],
+      new Map([['6900010', '5000.00']]),
+    )).status === 'matched',
+    'GET /re helper matches cash plus credit',
+  );
 }
 
 {
@@ -63,9 +69,10 @@ for (const [label, amount, expectedDiff] of [
   // therefore refuted and left untouched. Guard that observed behavior here.
   const amounts = new Map(receipts.map((row) => [row.reNumber, row.amount]));
   const rePayment = { amount: p.amount, whtAmount: p.whtAmount, reNumbers: p.reNumbers };
+  const reIdx = buildReReconIndex([rePayment], amounts);
   check(
-    computeReRow('200.00', [rePayment], amounts).status === 'matched' &&
-      computeReRow('100.00', [rePayment], amounts).status === 'matched',
+    computeReRow('6900001', '200.00', reIdx).status === 'matched' &&
+      computeReRow('6900002', '100.00', reIdx).status === 'matched',
     'GET /re helper marks both members of balanced 1-payment/2-RE coverage matched',
   );
 }

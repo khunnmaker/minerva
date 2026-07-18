@@ -22,7 +22,7 @@ import { readStaffUploadFile, readStaffUploadMeta, UPLOAD_ID_RE } from '../line/
 import { syncPaymentToJupiter } from '../jupiter/sync.js';
 import { readChequeFromBuffer, readSlipFromBuffer } from '../llm/readSlip.js';
 import { parseReReceipts, decodeExpressBytes } from '../finance/parseReReceipts.js';
-import { computeReRow } from '../finance/reRecon.js';
+import { buildReReconIndex, computeReRow } from '../finance/reRecon.js';
 import { normalizeSlipDate } from '../finance/normalize.js';
 import {
   bankTxnSearchTier,
@@ -3040,22 +3040,16 @@ export async function junoRoutes(app: FastifyInstance) {
       where: { status: { not: 'void' }, wrongTransferAt: null, reNumbers: { isEmpty: false } },
       select: { id: true, reNumbers: true, amount: true, whtAmount: true, creditUsed: true, customerName: true, status: true },
     });
-    const byRe = new Map<string, typeof candidatePayments>();
-    for (const p of candidatePayments) {
-      for (const re of p.reNumbers) {
-        const list = byRe.get(re);
-        if (list) list.push(p);
-        else byRe.set(re, [p]);
-      }
-    }
+    const referencedCores = new Set<string>();
+    for (const p of candidatePayments) for (const re of p.reNumbers) referencedCores.add(re);
 
-    // A transfer covering several REs must be priced against the SUM of the receipts it pays, so we
-    // need the gross of EVERY covered RE core — including ones a text filter dropped from `receipts`.
+    // A payment group must be priced against the SUM of the receipts it pays, so we need the gross
+    // of EVERY covered RE core — including ones a text filter dropped from `receipts`.
     // Seed the amount map from the rows we already loaded (free), then fetch only the missing cores
     // (usually none → still 2 queries; the gap query is bounded by the cores a payment references).
     const reAmountByCore = new Map<string, string>();
     for (const r of receipts) reAmountByCore.set(r.reNumber, r.amount);
-    const missingCores = [...byRe.keys()].filter((c) => !reAmountByCore.has(c));
+    const missingCores = [...referencedCores].filter((c) => !reAmountByCore.has(c));
     if (missingCores.length) {
       const extra = await prisma.reReceipt.findMany({
         where: { reNumber: { in: missingCores } },
@@ -3064,12 +3058,16 @@ export async function junoRoutes(app: FastifyInstance) {
       for (const rr of extra) reAmountByCore.set(rr.reNumber, rr.amount);
     }
 
+    // Connected-group verdicts (one RE split across transfers, one transfer paying many REs) —
+    // built ONCE over all candidate payments; see buildReReconIndex.
+    const reIndex = buildReReconIndex(candidatePayments, reAmountByCore);
+
     const allRows = receipts
       .filter((r) => receiptDateInRange(r.receiptDate))
       .map((r) => {
-        // Apportion each covering transfer by this RE's own receipt amount — never add a multi-RE
-        // payment's whole gross to every RE it lists (that was the double-count bug). See reRecon.ts.
-        const c = computeReRow(r.amount, byRe.get(r.reNumber) ?? [], reAmountByCore, r.notPosted);
+        // Group-level verdict + this RE's apportioned share (double-count and split-payment fixes
+        // both live in reRecon.ts).
+        const c = computeReRow(r.reNumber, r.amount, reIndex, r.notPosted);
         return {
           id: r.id,
           reNumber: r.reNumber,

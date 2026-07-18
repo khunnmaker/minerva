@@ -29,6 +29,7 @@ import {
   reSearchCore,
   searchedAmount,
 } from '../finance/rePaymentSearch.js';
+import { normalizeBillReference, normalizeReceiptReference } from '../finance/receiptReferences.js';
 import {
   buildDiscrepancyComponents,
   componentByPaymentId,
@@ -673,8 +674,15 @@ export async function junoRoutes(app: FastifyInstance) {
       mismatch: allRows.filter((bill) => bill.billStatus === 'mismatch').length,
     };
     const needle = q.q?.trim().toLocaleLowerCase();
+    const normalizedBillNeedle = q.q ? normalizeBillReference(q.q)?.value.toLocaleLowerCase() : undefined;
     const searchedRows = needle
-      ? allRows.filter((bill) => bill.billNo.toLocaleLowerCase().includes(needle) || bill.customerCode.toLocaleLowerCase().includes(needle) || bill.buyerName.toLocaleLowerCase().includes(needle))
+      ? allRows.filter((bill) => {
+        const normalizedStoredBill = normalizeBillReference(bill.billNo)?.value.toLocaleLowerCase();
+        return bill.billNo.toLocaleLowerCase().includes(needle)
+          || (!!normalizedBillNeedle && normalizedStoredBill?.includes(normalizedBillNeedle))
+          || bill.customerCode.toLocaleLowerCase().includes(needle)
+          || bill.buyerName.toLocaleLowerCase().includes(needle);
+      })
       : allRows;
     const rows = !q.status || q.status === 'all'
       ? searchedRows
@@ -1292,30 +1300,26 @@ export async function junoRoutes(app: FastifyInstance) {
     const body = verifyBodySchema.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
 
-    // Normalize each: trim, strip a leading RE/re, require exactly 7 digits — store bare
-    // digits. Dedupe preserving order. Any invalid token (or an empty result) 400s the whole
-    // request — there is no such thing as "verify with a partially-valid RE list".
-    // 9-leading 7-digit numbers are the บิลมือ namespace (969xxxx — see POST /bills), never an
-    // Express RE (those are year-led: 69, 70, …). The chips UI files them into billNos, so a
-    // 9-number arriving on the RE side is a mis-filed bill → reject rather than pollute
-    // กระทบยอด RE with a receipt number that can never import from ARRCPDAT.
+    // Client and API share the same normalization contract: formatting spaces/dashes collapse,
+    // MB + a canonical 9-leading number becomes its bare ManualBill key, while bounded alpha
+    // document refs remain billNos. Dedupe preserving order and reject cross-filed RE/bill data.
     const seen = new Set<string>();
     const normalized: string[] = [];
     for (const raw of body.data.reNumbers) {
-      const stripped = raw.trim().replace(/^re/i, '');
-      if (!/^\d{7}$/.test(stripped) || stripped.startsWith('9')) {
+      const reference = normalizeReceiptReference(raw);
+      if (!reference || reference.kind !== 're') {
         return reply.code(400).send({ error: 'invalid_re' });
       }
-      if (!seen.has(stripped)) { seen.add(stripped); normalized.push(stripped); }
+      if (!seen.has(reference.value)) { seen.add(reference.value); normalized.push(reference.value); }
     }
     const seenBills = new Set<string>();
     const normalizedBills: string[] = [];
     for (const raw of body.data.billNos ?? []) {
-      const checked = manualBillNoSchema.safeParse(raw);
-      if (!checked.success) {
-        return reply.code(400).send({ error: 'invalid_bill_no', message: 'เลขบิลห้ามมี / , หรือช่องว่าง' });
+      const reference = normalizeReceiptReference(raw);
+      if (!reference || reference.kind !== 'bill') {
+        return reply.code(400).send({ error: 'invalid_bill_no', message: 'รูปแบบเลขเอกสารไม่ถูกต้อง' });
       }
-      if (!seenBills.has(checked.data)) { seenBills.add(checked.data); normalizedBills.push(checked.data); }
+      if (!seenBills.has(reference.value)) { seenBills.add(reference.value); normalizedBills.push(reference.value); }
     }
     if (normalized.length === 0 && normalizedBills.length === 0) {
       return reply.code(400).send({ error: 'receipt_required' });

@@ -24,6 +24,11 @@ import Audit from './Audit';
 import Bills from './Bills';
 import AppSwitcher from './AppSwitcher';
 import { useHashTab } from '@pantheon/ui';
+import {
+  isManualBillReference,
+  normalizeBillReference,
+  normalizeReceiptReference,
+} from './lib/receiptReferences';
 
 // No ใบกำกับภาษี tab: Prominent issues a tax invoice on EVERY sale (in Express, as part of
 // recording), so a "requested" queue would contain everything and filter nothing. The invoice
@@ -1757,55 +1762,40 @@ function CashChequeSection({ payment: p, busy, run, isCeo }: {
   );
 }
 
-// Splits on '/', ',', or whitespace. Seven bare digits are an Express RE — UNLESS they start
-// with 9, which is the บิลมือ namespace (969xxxx = 9 + พ.ศ. YY + running, owner convention
-// 2026-07-14; Express REs are year-led 69/70/… so the two can never collide). Every other
-// token that obeys the manual-bill charset is also a บิลมือ number (legacy MB69-####, 38-13).
-// The server mirrors both rules (POST /verify rejects 9-leading REs; POST /bills rejects
-// RE-shaped bill numbers), so a token can never land in the wrong bucket.
+// Slash/comma/space delimit chips, except a separator directly between an alpha prefix and its
+// digits (MB 9690001, XS 000001). That separator is formatting and is removed by normalization.
 const RE_SEPARATOR = /[/,\s]+/;
-// Display label for a บิลมือ chip — "MB 9690001", mirroring the RE chips' "RE 6900025"
-// (owner 2026-07-15: bill chips read as first-class next to REs — blue, MB-prefixed).
-// ONLY the canonical 9-leading 7-digit บิลมือ numbers get the prefix: staff also type other
-// document refs into the bill slot (Express XS cash-sale numbers like XS6900343, legacy
-// MB69-####) and those must render exactly as typed — "MB XS6900343" mislabeled the form
-// (owner correction, same day).
-const billLabel = (billNo: string) => (/^9\d{6}$/.test(billNo) ? `MB ${billNo}` : billNo);
-// Chip tone by pattern (owner's color language, 2026-07-15): blue = a real บิลมือ number
-// (canonical 969xxxx or legacy MB…, registry-checked), orange = an Express XS cash-sale ref
-// (a legitimate OTHER document — deliberately not registry-checked), red = unrecognized
-// format (e.g. staff typing the word "บิลมือ") — a loud flag, still saveable per the
-// soft-warning philosophy.
-type BillTone = 'mb' | 'xs' | 'other';
-const billTone = (billNo: string): BillTone =>
-  /^9\d{6}$/.test(billNo) || /^MB/i.test(billNo) ? 'mb'
-  : /^XS\d{3,}$/i.test(billNo) ? 'xs'
-  : 'other';
+// Canonical บิลมือ chips display MB-prefixed ("MB 9690001" mirroring "RE 6900025" — owner
+// convention 2026-07-15); other document refs render exactly as stored.
+const billLabel = (billNo: string) => (isManualBillReference(billNo) ? `MB ${billNo}` : billNo);
+type BillTone = 'manual' | 'external' | 'other';
+const billTone = (billNo: string): BillTone => normalizeBillReference(billNo)?.billKind ?? 'other';
 const BILL_TONE_CLS: Record<BillTone, string> = {
-  mb: 'bg-sky-50 text-sky-700',
-  xs: 'bg-amber-50 text-amber-700',
+  manual: 'bg-sky-50 text-sky-700',
+  external: 'bg-amber-50 text-amber-700',
   other: 'bg-rose-100 text-rose-700',
 };
 const BILL_TONE_TITLE: Record<BillTone, string> = {
-  mb: 'บิลมือ',
-  xs: 'เลขเอกสารขายสด Express (XS)',
+  manual: 'บิลมือ',
+  external: 'เลขเอกสารภายนอก',
   other: 'ไม่รู้จักรูปแบบเลขนี้ — ตรวจสอบก่อนบันทึก',
 };
 type ReceiptToken = { kind: 're' | 'bill'; value: string };
 function normalizeReceiptToken(raw: string): ReceiptToken | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  const withoutPrefix = trimmed.replace(/^re/i, '');
-  if (/^\d{7}$/.test(withoutPrefix) && !withoutPrefix.startsWith('9')) {
-    return { kind: 're', value: withoutPrefix };
-  }
-  const billNo = trimmed.toUpperCase();
-  return /^[^/,\s]+$/.test(billNo) ? { kind: 'bill', value: billNo } : null;
+  const normalized = normalizeReceiptReference(raw);
+  return normalized ? { kind: normalized.kind, value: normalized.value } : null;
+}
+
+function normalizeBillList(values: string[]): string[] {
+  const normalized = values
+    .map((value) => normalizeBillReference(value)?.value)
+    .filter((value): value is string => value !== undefined);
+  return [...new Set(normalized)];
 }
 
 function useReceiptChipsInput(initialRe: string[], initialBills: string[]) {
   const [reNumbers, setReNumbers] = useState<string[]>(initialRe);
-  const [billNos, setBillNos] = useState<string[]>(initialBills);
+  const [billNos, setBillNos] = useState<string[]>(() => normalizeBillList(initialBills));
   const [reInput, setReInput] = useState('');
   const [unknownBills, setUnknownBills] = useState<Set<string>>(new Set());
   const [checkingBills, setCheckingBills] = useState(false);
@@ -1823,8 +1813,11 @@ function useReceiptChipsInput(initialRe: string[], initialBills: string[]) {
   }
 
   function onReInputChange(v: string) {
-    if (RE_SEPARATOR.test(v.slice(-1)) && v.trim()) {
-      const parts = v.split(RE_SEPARATOR);
+    // Do not commit an alpha prefix when FIN has only just typed its formatting space.
+    if (/^[A-Za-z]{1,4}[\s-]+$/.test(v)) { setReInput(v); return; }
+    const protectedPrefixes = v.replace(/([A-Za-z]{1,4})[\s-]+(?=\d{4,10}(?:[/,\s]|$))/g, '$1');
+    if (RE_SEPARATOR.test(protectedPrefixes.slice(-1)) && protectedPrefixes.trim()) {
+      const parts = protectedPrefixes.split(RE_SEPARATOR);
       const remainder = parts.pop() ?? '';
       for (const part of parts) {
         const token = normalizeReceiptToken(part);
@@ -1850,21 +1843,22 @@ function useReceiptChipsInput(initialRe: string[], initialBills: string[]) {
 
   function reset(nextRe: string[], nextBills: string[]) {
     setReNumbers(nextRe);
-    setBillNos(nextBills);
+    setBillNos(normalizeBillList(nextBills));
     setReInput('');
   }
 
-  // Soft validation only: missing bills are warned but remain saveable because paper bills may
-  // be back-entered after the payment is checked.
+  // Soft validation only for canonical manual bills. External alpha-prefixed documents have no
+  // Juno registry, while missing manual bills remain saveable for later paper-bill entry.
   useEffect(() => {
-    if (billNos.length === 0) { setUnknownBills(new Set()); setCheckingBills(false); return; }
+    const manualBillNos = billNos.filter(isManualBillReference);
+    if (manualBillNos.length === 0) { setUnknownBills(new Set()); setCheckingBills(false); return; }
     let cancelled = false;
     const timer = setTimeout(() => {
       setCheckingBills(true);
-      Promise.all(billNos.map(async (billNo) => {
+      Promise.all(manualBillNos.map(async (billNo) => {
         try {
           const result = await getManualBills({ q: billNo });
-          return result.bills.some((bill) => bill.billNo.toUpperCase() === billNo) ? null : billNo;
+          return result.bills.some((bill) => normalizeBillReference(bill.billNo)?.value === billNo) ? null : billNo;
         } catch {
           return null; // network/auth failures are handled by save; don't mark false negatives
         }
@@ -1912,7 +1906,7 @@ function ReceiptChipsBox({ state, onEnter, autoFocus }: {
           const tone = billTone(billNo);
           // registry-miss ring only makes sense for actual บิลมือ numbers — XS is a different
           // document (never in the registry), and 'other' is already loud-red by itself
-          const unknown = tone === 'mb' && state.unknownBills.has(billNo);
+          const unknown = tone === 'manual' && state.unknownBills.has(billNo);
           return (
             <span key={`bill-${billNo}`} title={unknown ? 'ไม่พบบิลนี้ในระบบ' : BILL_TONE_TITLE[tone]} className={`flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full ${BILL_TONE_CLS[tone]} text-xs font-semibold ${unknown ? 'ring-1 ring-rose-400' : ''}`}>
               {billLabel(billNo)}{(unknown || tone === 'other') && <AlertTriangle size={10} className="text-rose-500" />}

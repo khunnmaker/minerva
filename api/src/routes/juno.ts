@@ -3062,7 +3062,7 @@ export async function junoRoutes(app: FastifyInstance) {
       for (const rr of extra) reAmountByCore.set(rr.reNumber, rr.amount);
     }
 
-    const rows = receipts
+    const allRows = receipts
       .filter((r) => receiptDateInRange(r.receiptDate))
       .map((r) => {
         // Apportion each covering transfer by this RE's own receipt amount — never add a multi-RE
@@ -3082,16 +3082,19 @@ export async function junoRoutes(app: FastifyInstance) {
           diff: c.diff,
           paymentCount: c.paymentCount,
         };
-      })
-      .filter((r) => !q.status || q.status === 'all' || r.status === q.status);
+      });
 
+    const rows = allRows.filter((r) => !q.status || q.status === 'all' || r.status === q.status);
+
+    // Summary cards ignore the status chip (they'd just echo the filter back) but do respect the
+    // text + date filters — clicking จับคู่แล้ว narrows the list, never the headline counts.
     const summary = {
-      total: rows.length,
-      matched: rows.filter((r) => r.status === 'matched').length,
-      mismatch: rows.filter((r) => r.status === 'mismatch').length,
-      unpaid: rows.filter((r) => r.status === 'unpaid').length,
-      totalAmount: rows.reduce((s, r) => s + r.amount, 0),
-      matchedAmount: rows.filter((r) => r.status === 'matched').reduce((s, r) => s + r.amount, 0),
+      total: allRows.length,
+      matched: allRows.filter((r) => r.status === 'matched').length,
+      mismatch: allRows.filter((r) => r.status === 'mismatch').length,
+      unpaid: allRows.filter((r) => r.status === 'unpaid').length,
+      totalAmount: allRows.reduce((s, r) => s + r.amount, 0),
+      matchedAmount: allRows.filter((r) => r.status === 'matched').reduce((s, r) => s + r.amount, 0),
     };
 
     return { rows, summary };

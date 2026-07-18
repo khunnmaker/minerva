@@ -417,24 +417,28 @@ function ManagementApp({ isCeo }: { isCeo: boolean }) {
             no bottom bar, no "more". Every top-level destination is a tab here, no group
             captions or divider bars (2026-07-18 simplification). Mobile never renders this
             (hidden below lg:), so the existing role homes + MoreMenu are completely untouched
-            below lg:. */}
-        <div className="hidden lg:flex lg:flex-wrap px-4 gap-1">
-          {desktopTabs.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setView(t.key)}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 text-sm border-b-2 whitespace-nowrap ${
-                activeView === t.key
-                  ? 'border-amber-600 text-amber-700 font-bold'
-                  : 'border-transparent text-slate-500 font-medium hover:text-slate-700'
-              }`}
-            >
-              {t.icon} {t.label}
-              {typeof t.count === 'number' && t.count > 0 && (
-                <span className="ml-1 px-1.5 rounded-full text-xs bg-rose-100 text-rose-700">{t.count}</span>
-              )}
-            </button>
-          ))}
+            below lg:. Full-bleed dark band (2026-07-18 restyle, owner: strip read as "flat" and
+            left-stuck against the centered white header) — inner container matches the header
+            row's own max-w-5xl mx-auto px-4 so the tabs line up under the logo/logout row. */}
+        <div className="hidden lg:block bg-slate-900">
+          <div className="max-w-5xl mx-auto px-4 flex lg:flex-wrap gap-1">
+            {desktopTabs.map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setView(t.key)}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-sm border-b-2 whitespace-nowrap ${
+                  activeView === t.key
+                    ? 'border-amber-400 text-amber-300 font-medium'
+                    : 'border-transparent text-slate-300 font-medium hover:text-white'
+                }`}
+              >
+                {t.icon} {t.label}
+                {typeof t.count === 'number' && t.count > 0 && (
+                  <span className="ml-1 px-1.5 rounded-full text-xs bg-rose-500 text-white ring-1 ring-rose-300/40">{t.count}</span>
+                )}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
@@ -588,9 +592,9 @@ function ApprovalsComposedView({
   );
 }
 
-// A small pill-row segmented control matching the app's existing toggle idiom (see e.g.
-// NeeFulfillmentQueue's lane switch / ExpenseSheet's entity picker: bordered buttons in a
-// row, active = filled amber, inactive = outlined slate).
+// A compact inline pill-group segmented control (2026-07-18 restyle — owner: the old
+// full-width grid of big buttons read as an oversized slab, esp. the 3-wide อื่นๆ row).
+// Left-aligned at the top of the view content, sized to its content rather than the row.
 function SegmentBar<T extends string>({
   options,
   value,
@@ -601,13 +605,13 @@ function SegmentBar<T extends string>({
   onChange: (key: T) => void;
 }) {
   return (
-    <div className="grid gap-2 mb-4" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
+    <div className="inline-flex items-center gap-0.5 p-0.5 mb-4 rounded-lg border border-slate-200 bg-white">
       {options.map((o) => (
         <button
           key={o.key}
           onClick={() => onChange(o.key)}
-          className={`min-h-[44px] rounded-xl border text-sm font-semibold flex items-center justify-center gap-1.5 ${
-            value === o.key ? 'bg-amber-600 border-amber-600 text-white' : 'border-slate-300 text-slate-600 hover:bg-slate-50'
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md ${
+            value === o.key ? 'bg-amber-600 text-white font-medium' : 'text-slate-600 hover:bg-slate-50'
           }`}
         >
           {o.icon} {o.label}

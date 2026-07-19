@@ -31,19 +31,19 @@ import RequestSheet from './RequestSheet';
 import RequestDetail from './RequestDetail';
 import ExpenseSheet from './ExpenseSheet';
 import Settings from './Settings';
-import MessengerHome from './Messenger';
 
 // Phase 4 — the staff front door. See docs/CERES_REVAMP_PLAN.md "Phase 4" — Staff
 // frontend screens + acceptance criteria.
 //
 // 2026-07-19 (docs/CERES_STAFF_HOME_PLAN.md): หน้าแรก no longer mirrors คำขอของฉัน —
 // it surfaces open-advance liquidation cards + a compact "รอดำเนินการ" list instead, and
-// the bottom nav drops from 4 tabs to 3 (เพิ่มเติม removed; its one item, the v1 legacy
+// the bottom nav drops from 4 tabs to 3 (เพิ่มเติม removed; the v1 legacy self-entry was
+// retired entirely 2026-07-19 — owner: everyone moves to v2 requests; and its one item, the v1 legacy
 // self-entry flow, relocates to a low-key card at the bottom of คำขอของฉัน).
 
 const PORTAL_URL: string = import.meta.env.VITE_PORTAL_URL ?? 'https://pantheon.prominentdental.com';
 
-type View = 'home' | 'mine' | 'settings' | 'legacy';
+type View = 'home' | 'mine' | 'settings';
 
 // Approval states that always show on หน้าแรก's "รอดำเนินการ" list, regardless of age.
 const PENDING_APPROVAL_STATUSES: StaffRequest['approvalStatus'][] = ['legacy', 'pending_nee', 'pending_ceo'];
@@ -65,7 +65,7 @@ export default function StaffHome({
   onOpenSettings?: () => void;
 } = {}) {
   const { bootstrap, onLogout } = useCeres();
-  const viewKeys: View[] = ['home', 'mine', 'settings', 'legacy'];
+  const viewKeys: View[] = ['home', 'mine', 'settings'];
   const [view, setView] = useHashTab<View>(viewKeys, 'home');
   const activeView = embeddedView ?? view;
 
@@ -289,33 +289,11 @@ export default function StaffHome({
               onOpenDetail={openDetail}
             />
 
-            {/* Legacy v1 self-entry flow — relocated here from the removed เพิ่มเติม tab
-                (docs/CERES_STAFF_HOME_PLAN.md "3"). Low-key/muted, not the primary amber
-                accent, and only reachable from the real (unembedded) staff app — GM/CEO's
-                "ของฉัน" self-service embed never exposed this flow before, so it stays out
-                of reach there too. */}
-            {!embeddedView && (
-              <button
-                onClick={() => setView('legacy')}
-                className="w-full mt-6 flex items-center gap-3 px-4 py-3.5 min-h-[56px] rounded-xl border border-slate-200 bg-slate-50 text-left hover:bg-slate-100"
-              >
-                <div className="shrink-0 w-9 h-9 rounded-full bg-slate-200 text-slate-500 flex items-center justify-center">
-                  <ListChecks size={17} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-semibold text-sm text-slate-600">ค่าใช้จ่ายเงินเบิกเดิม</div>
-                  <div className="text-xs text-slate-400">สำหรับเงินที่รับไว้แบบเดิม (ระบบเก่า)</div>
-                </div>
-                <ChevronRight size={17} className="text-slate-300 shrink-0" />
-              </button>
-            )}
           </>
         )}
 
         {activeView === 'settings' && <Settings />}
       </main>
-
-      {activeView === 'legacy' && <MessengerHome embedded onBack={() => setView('mine')} />}
 
       {/* bottom nav — 3 items (เพิ่มเติม removed 2026-07-19), persistent labels + ARIA names */}
       {!embeddedView && <nav
@@ -324,7 +302,7 @@ export default function StaffHome({
       >
         <div className="max-w-md mx-auto grid grid-cols-3">
           <NavButton active={view === 'home'} label="หน้าแรก" icon={<Home size={20} />} onClick={() => setView('home')} />
-          <NavButton active={view === 'mine' || view === 'legacy'} label="คำขอของฉัน" icon={<ListChecks size={20} />} onClick={() => setView('mine')} />
+          <NavButton active={view === 'mine'} label="คำขอของฉัน" icon={<ListChecks size={20} />} onClick={() => setView('mine')} />
           <NavButton active={view === 'settings'} label="ตั้งค่า" icon={<SettingsIcon size={20} />} onClick={() => setView('settings')} />
         </div>
       </nav>}

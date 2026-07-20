@@ -33,7 +33,7 @@ const departmentBody = z.object({
 
 function audienceWhere(role: Role) {
   if (role === 'supervisor') return {};
-  if (role === 'gm' || role === 'agm') return { audience: { in: ['everyone', 'gm_plus'] } };
+  if (role === 'gm' || role === 'central') return { audience: { in: ['everyone', 'gm_plus'] } };
   return { audience: 'everyone' };
 }
 

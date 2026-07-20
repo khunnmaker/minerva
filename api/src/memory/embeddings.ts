@@ -287,7 +287,7 @@ export async function retrieveRelevantKnowledge(
   const lit = toVectorLiteral(queryVec);
   const audienceClause = role === 'supervisor'
     ? Prisma.sql`TRUE`
-    : role === 'gm' || role === 'agm'
+    : role === 'gm' || role === 'central'
       ? Prisma.sql`ka.audience IN ('everyone', 'gm_plus')`
       : Prisma.sql`ka.audience = 'everyone'`;
   const channelClause = channel === 'line'

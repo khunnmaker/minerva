@@ -41,11 +41,28 @@ describe('retrieveRelevantKnowledge SQL scoping', () => {
     expect(sql).toContain("ka.status = 'published'");
   });
 
-  it('allows only everyone and gm_plus for gm/agm retrieval', async () => {
-    await retrieveRelevantKnowledge([0.1], 'agm', 'web', 6);
+  it('does not restrict the audience for supervisor retrieval', async () => {
+    await retrieveRelevantKnowledge([0.1], 'supervisor', 'web', 6);
+
+    const sql = renderedQuery();
+    expect(sql).not.toContain('AND ka.audience');
+    expect(sql).not.toContain('AND ka."lineExposable"');
+  });
+
+  it.each(['gm', 'central'] as const)('allows everyone and gm_plus for %s retrieval', async (role) => {
+    await retrieveRelevantKnowledge([0.1], role, 'web', 6);
 
     const sql = renderedQuery();
     expect(sql).toContain("ka.audience IN ('everyone', 'gm_plus')");
     expect(sql).not.toContain("ka.audience = 'supervisor'");
+    expect(sql).not.toContain('AND ka."lineExposable"');
+  });
+
+  it('adds LINE exposure restriction to gm_plus-capable retrieval', async () => {
+    await retrieveRelevantKnowledge([0.1], 'gm', 'line', 6);
+
+    const sql = renderedQuery();
+    expect(sql).toContain("ka.audience IN ('everyone', 'gm_plus')");
+    expect(sql).toContain('ka."lineExposable" = true');
   });
 });

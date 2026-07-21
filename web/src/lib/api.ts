@@ -371,6 +371,8 @@ export const addQuickReply = (label: string, body: string) =>
   authed<{ item: QuickReply }>('/api/quick-replies', { method: 'POST', body: JSON.stringify({ label, body }) });
 export const deleteQuickReply = (id: string) =>
   authed<{ ok: boolean }>(`/api/quick-replies/${id}`, { method: 'DELETE' });
+export const updateQuickReply = (id: string, data: { label?: string; body?: string }) =>
+  authed<{ item: QuickReply }>(`/api/quick-replies/${id}`, { method: 'PUT', body: JSON.stringify(data) });
 // Send a quick-reply template to the customer as a standalone message (does not
 // touch the pending question or the draft composer).
 // Returns { needsConfirm: true } when the template quotes a price and confirm wasn't set (428).

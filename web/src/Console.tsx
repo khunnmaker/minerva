@@ -2442,15 +2442,23 @@ function LearningMetrics() {
           </div>
           <div className="space-y-1.5">
             <div className="text-[11px] font-semibold text-slate-500">แยกตามหมวด (อัตราส่งโดยไม่แก้)</div>
+            <div className="flex items-center gap-2 text-[10px] font-medium">
+              <div className="w-16 shrink-0" />
+              <div className="flex-1" />
+              <div className="w-10 shrink-0 text-right text-sky-700">ส่งเลย</div>
+              <div className="w-12 shrink-0 text-right text-emerald-700 leading-tight">ยอมรับ+แก้น้อย</div>
+              <div className="hidden sm:block w-40 shrink-0 text-slate-400">ส่งเอง·แก้·คน</div>
+            </div>
             {m.byCategory.map((c) => (
-              <div key={c.category} className="flex items-center gap-2 text-xs">
+              <div key={c.category} className="flex items-center gap-2 text-xs"
+                title={`ส่งเลยโดยไม่แก้ ${pct(c.acceptRate)} · ยอมรับ+แก้เล็กน้อย ${pct(c.effectiveAcceptRate)} · ส่งเอง ${c.accepted} · แก้ ${c.edited} · ให้คนตอบ ${c.escalated}`}>
                 <div className="w-16 shrink-0 text-slate-600 truncate">{CAT_TH[c.category] ?? c.category}</div>
                 <div className="flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden">
                   <div className="h-full bg-sky-500 rounded-full" style={{ width: `${(c.acceptRate ?? 0) * 100}%` }} />
                 </div>
-                <div className="w-9 text-right text-slate-700 font-medium">{pct(c.acceptRate)}</div>
-                <div className="w-24 text-right text-[10px] text-emerald-700">ยอมรับ+แก้เล็กน้อย {pct(c.effectiveAcceptRate)}</div>
-                <div className="hidden sm:block w-36 shrink-0 text-[10px] text-slate-400">ส่งเอง {c.accepted}·แก้ {c.edited}·คน {c.escalated}</div>
+                <div className="w-10 shrink-0 text-right text-slate-700 font-medium">{pct(c.acceptRate)}</div>
+                <div className="w-12 shrink-0 text-right text-emerald-700">{pct(c.effectiveAcceptRate)}</div>
+                <div className="hidden sm:block w-40 shrink-0 text-[10px] text-slate-400">ส่งเอง {c.accepted} · แก้ {c.edited} · คน {c.escalated}</div>
               </div>
             ))}
           </div>
@@ -2459,10 +2467,17 @@ function LearningMetrics() {
               <div className="text-[11px] font-semibold text-slate-500 mb-1">แนวโน้มรายสัปดาห์ (อัตราส่งโดยไม่แก้)</div>
               <div className="flex items-end gap-1 h-16">
                 {m.byWeek.map((w) => (
-                  <div key={w.week} className="flex-1 flex flex-col items-center justify-end" title={`สัปดาห์ ${w.week}: ${pct(w.acceptRate)} (${w.total} ดราฟ)`}>
-                    <div className="w-full bg-sky-400 rounded-t" style={{ height: `${Math.max((w.acceptRate ?? 0) * 100, 3)}%` }} />
-                    <div className="text-[8px] text-slate-400 mt-0.5">{w.week.slice(5)}</div>
+                  <div key={w.week} className="flex-1 h-full flex flex-col items-center justify-end" title={`สัปดาห์ ${w.week}: ${pct(w.acceptRate)} (${w.total} ดราฟ)`}>
+                    <div className="text-[8px] text-slate-500 leading-none">{pct(w.acceptRate)}</div>
+                    <div className="w-full h-12 flex items-end">
+                      <div className="w-full bg-sky-400 rounded-t" style={{ height: `${Math.max((w.acceptRate ?? 0) * 100, 3)}%` }} />
+                    </div>
                   </div>
+                ))}
+              </div>
+              <div className="flex gap-1 mt-0.5">
+                {m.byWeek.map((w) => (
+                  <div key={`${w.week}-label`} className="flex-1 text-center text-[8px] text-slate-400">{w.week.slice(5)}</div>
                 ))}
               </div>
             </div>

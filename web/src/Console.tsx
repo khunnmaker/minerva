@@ -2446,8 +2446,10 @@ function LearningMetrics() {
               <div className="w-16 shrink-0" />
               <div className="flex-1" />
               <div className="w-10 shrink-0 text-right text-sky-700">ส่งเลย</div>
-              <div className="w-12 shrink-0 text-right text-emerald-700 leading-tight">ยอมรับ+แก้น้อย</div>
-              <div className="hidden sm:block w-40 shrink-0 text-slate-400">ส่งเอง·แก้·คน</div>
+              <div className="w-10 shrink-0 text-right text-emerald-700 leading-tight">แก้น้อย</div>
+              <div className="hidden sm:block w-9 shrink-0 text-right text-slate-400">ส่งเอง</div>
+              <div className="hidden sm:block w-9 shrink-0 text-right text-slate-400">แก้</div>
+              <div className="hidden sm:block w-9 shrink-0 text-right text-slate-400">คน</div>
             </div>
             {m.byCategory.map((c) => (
               <div key={c.category} className="flex items-center gap-2 text-xs"
@@ -2457,31 +2459,65 @@ function LearningMetrics() {
                   <div className="h-full bg-sky-500 rounded-full" style={{ width: `${(c.acceptRate ?? 0) * 100}%` }} />
                 </div>
                 <div className="w-10 shrink-0 text-right text-slate-700 font-medium">{pct(c.acceptRate)}</div>
-                <div className="w-12 shrink-0 text-right text-emerald-700">{pct(c.effectiveAcceptRate)}</div>
-                <div className="hidden sm:block w-40 shrink-0 text-[10px] text-slate-400">ส่งเอง {c.accepted} · แก้ {c.edited} · คน {c.escalated}</div>
+                <div className="w-10 shrink-0 text-right text-emerald-700">{pct(c.effectiveAcceptRate)}</div>
+                <div className="hidden sm:block w-9 shrink-0 text-right text-[10px] text-slate-400">{c.accepted}</div>
+                <div className="hidden sm:block w-9 shrink-0 text-right text-[10px] text-slate-400">{c.edited}</div>
+                <div className="hidden sm:block w-9 shrink-0 text-right text-[10px] text-slate-400">{c.escalated}</div>
               </div>
             ))}
           </div>
-          {m.byWeek.length > 0 && (
-            <div>
-              <div className="text-[11px] font-semibold text-slate-500 mb-1">แนวโน้มรายสัปดาห์ (อัตราส่งโดยไม่แก้)</div>
-              <div className="flex items-end gap-1 h-16">
-                {m.byWeek.map((w) => (
-                  <div key={w.week} className="flex-1 h-full flex flex-col items-center justify-end" title={`สัปดาห์ ${w.week}: ${pct(w.acceptRate)} (${w.total} ดราฟ)`}>
-                    <div className="text-[8px] text-slate-500 leading-none">{pct(w.acceptRate)}</div>
-                    <div className="w-full h-12 flex items-end">
-                      <div className="w-full bg-sky-400 rounded-t" style={{ height: `${Math.max((w.acceptRate ?? 0) * 100, 3)}%` }} />
-                    </div>
-                  </div>
-                ))}
+          {m.byWeek.length > 0 && (() => {
+            const weeks = m.byWeek;
+            const n = weeks.length;
+            const VB_W = 800;
+            const VB_H = 64;
+            const PAD = 4;
+            const plotH = VB_H - PAD * 2;
+            const xAt = (i: number) => ((i + 0.5) / n) * VB_W;
+            const yAt = (pct100: number) => PAD + (1 - pct100 / 100) * plotH;
+            const segments: { x: number; y: number }[][] = [];
+            let current: { x: number; y: number }[] = [];
+            weeks.forEach((w, i) => {
+              if (w.acceptRate == null) {
+                if (current.length) { segments.push(current); current = []; }
+                return;
+              }
+              current.push({ x: xAt(i), y: yAt(w.acceptRate * 100) });
+            });
+            if (current.length) segments.push(current);
+            const linePath = (pts: { x: number; y: number }[]) =>
+              pts.map((p, idx) => `${idx === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+            const areaPath = (pts: { x: number; y: number }[]) =>
+              `M${pts[0].x.toFixed(1)},${VB_H} L${pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L')} L${pts[pts.length - 1].x.toFixed(1)},${VB_H} Z`;
+            return (
+              <div>
+                <div className="text-[11px] font-semibold text-slate-500 mb-1">แนวโน้มรายสัปดาห์ (อัตราส่งโดยไม่แก้)</div>
+                <div className="flex gap-1">
+                  {weeks.map((w) => (
+                    <div key={`${w.week}-val`} className="flex-1 text-center text-[8px] text-slate-500 leading-none">{pct(w.acceptRate)}</div>
+                  ))}
+                </div>
+                <svg viewBox={`0 0 ${VB_W} ${VB_H}`} preserveAspectRatio="none" className="w-full h-16 block mt-0.5">
+                  {segments.map((seg, idx) => (
+                    <path key={`area-${idx}`} d={areaPath(seg)} fill="#e0f2fe" fillOpacity={0.4} stroke="none" />
+                  ))}
+                  {segments.map((seg, idx) => (
+                    <path key={`line-${idx}`} d={linePath(seg)} fill="none" stroke="#0ea5e9" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                  ))}
+                  {weeks.map((w, i) => w.acceptRate == null ? null : (
+                    <circle key={`dot-${w.week}`} cx={xAt(i)} cy={yAt(w.acceptRate * 100)} r={2.5} fill="#0ea5e9">
+                      <title>{`สัปดาห์ ${w.week}: ${pct(w.acceptRate)} (${w.total} ดราฟ)`}</title>
+                    </circle>
+                  ))}
+                </svg>
+                <div className="flex gap-1 mt-0.5">
+                  {weeks.map((w) => (
+                    <div key={`${w.week}-label`} className="flex-1 text-center text-[8px] text-slate-400" title={`สัปดาห์ ${w.week}: ${pct(w.acceptRate)} (${w.total} ดราฟ)`}>{w.week.slice(5)}</div>
+                  ))}
+                </div>
               </div>
-              <div className="flex gap-1 mt-0.5">
-                {m.byWeek.map((w) => (
-                  <div key={`${w.week}-label`} className="flex-1 text-center text-[8px] text-slate-400">{w.week.slice(5)}</div>
-                ))}
-              </div>
-            </div>
-          )}
+            );
+          })()}
           <div className="text-[10px] text-slate-400">
             ส่งอัตโนมัติ {m.autosend.sent} · ยกเลิก {m.autosend.canceled}
             {m.autosend.lastSentAt ? ` · ล่าสุด ${fmtTime(m.autosend.lastSentAt)}` : ''}

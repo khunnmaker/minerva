@@ -23,6 +23,7 @@ import {
   listStaffRequests,
   V2_REQUEST_TYPES,
 } from '../../ceres/requestService.js';
+import { RequestVoidError, voidStaffRequest } from '../../ceres/requestVoid.js';
 import { notifyRequesterForMoneyEvent } from '../../ceres/notifyRequester.js';
 import { isValidAmount, parseRequestCategoryGroups, thaiDayKey, toStaffRequestRow } from './common.js';
 import { GROUP_COMPANY_CODES } from '../../jupiter/companies.js';
@@ -55,6 +56,20 @@ function moneyError(reply: { code: (status: number) => { send: (body: unknown) =
     : ['not_approved', 'already_fulfilled', 'not_paid_advance', 'refund_exceeds_outstanding'].includes(err.code) ? 409
       : 400;
   return reply.code(status).send({ error: err.code });
+}
+
+// CEO-void error mapper — RequestVoidError carries an optional `detail` object (blocking
+// liquidation children / outstanding balance) that the UI needs to list what's in the way
+// (owner spec: "ต้องจัดการรายการลูกก่อน" listing what blocks it), so it's spread onto the
+// body rather than collapsed to a bare {error} like the other mappers above. Falls through
+// to moneyError for the (defensive, not expected in practice — see requestVoid.ts's report
+// notes) case where the composed reversal itself refuses.
+function voidError(reply: { code: (status: number) => { send: (body: unknown) => unknown } }, err: unknown) {
+  if (err instanceof RequestVoidError) {
+    const status = err.code === 'not_found' ? 404 : 409;
+    return reply.code(status).send({ error: err.code, ...(err.detail ?? {}) });
+  }
+  return moneyError(reply, err);
 }
 
 // Last day of the given month (1-indexed month, in the Thai/local calendar sense —
@@ -468,6 +483,27 @@ export function requestsRoutes(app: FastifyInstance) {
         return { request: toStaffRequestRow(request, review) };
       } catch (err) {
         return requestError(reply, err);
+      }
+    },
+  );
+
+  // POST /api/ceres/requests/:id/void { reason } — CEO-ONLY, ANY approvalStatus (owner
+  // directive, 2026-07-21: "I and only CEO should have the ability to remove any... request").
+  // Separate from /cancel (requester/manager self-service, pre-fulfillment only) and from
+  // /request-money-events/:id/reverse (money-only, doesn't flip approvalStatus) — see
+  // requestVoid.ts for exactly how a paid request's reversal composes into this same write.
+  const voidBody = z.object({ reason: z.string().min(1).max(300) });
+  app.post<{ Params: { id: string } }>(
+    '/api/ceres/requests/:id/void',
+    { preHandler: requireCeresRole('ceo') },
+    async (req, reply) => {
+      const parsed = voidBody.safeParse(req.body);
+      if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
+      try {
+        const request = await voidStaffRequest({ requestId: req.params.id, reason: parsed.data.reason, agent: req.agent! });
+        return { request: toStaffRequestRow(request) };
+      } catch (err) {
+        return voidError(reply, err);
       }
     },
   );

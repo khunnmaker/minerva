@@ -140,12 +140,18 @@ type MoneyEventRow = {
   createdAt: Date;
 };
 
-function activeEvents(events: readonly MoneyEventRow[]): MoneyEventRow[] {
+// Exported so requestVoid.ts (CEO void composing this same reverse logic) can determine
+// "does this request still have a live, unreversed payment/purchase event" without
+// duplicating the reversal-tracking rule.
+export function activeEvents(events: readonly MoneyEventRow[]): MoneyEventRow[] {
   const reversed = new Set(events.filter((event) => event.kind === 'reversal' && event.reversesEventId).map((event) => event.reversesEventId));
   return events.filter((event) => event.kind !== 'reversal' && !reversed.has(event.id));
 }
 
-function liquidationSatang(
+// Exported for the same reason as activeEvents — requestVoid.ts's outstanding-balance
+// guard (advance void with zero non-void liquidation children still blocks if money
+// hasn't been fully returned) reuses this instead of re-deriving the satang math.
+export function liquidationSatang(
   advanceAmount: string,
   events: readonly MoneyEventRow[],
   expenses: readonly { amount: string }[],
@@ -214,16 +220,18 @@ export async function syncAdvanceLiquidationProjection(tx: CeresTx, request: {
   }
 }
 
-// Append-only event, cash movement, request timeline, and request projection are one
-// transaction. The request-row lock makes a double tap safe even without an explicit
-// idempotency key; a supplied key additionally turns retries into a replay.
-export async function recordRequestMoneyEvent(input: RecordRequestMoneyInput) {
+// Append-only event, cash movement, request timeline, and request projection, run on a
+// caller-supplied transaction client — the composable core. Exported so requestVoid.ts's
+// CEO void (paid request → reverse-then-void, spec: "compose the existing one, not a
+// second reversal path") can run the SAME reversal logic inside its own single
+// transaction, atomically with the void's own writes. recordRequestMoneyEvent (below)
+// is just this wrapped in its own transaction for every other, standalone caller.
+export async function recordRequestMoneyEventInTx(tx: CeresTx, input: RecordRequestMoneyInput) {
   if (!/^\d+(\.\d{1,2})?$/.test(input.amount) || amountToSatang(input.amount) <= 0) {
     throw new RequestMoneyError('invalid_evidence');
   }
-  return prisma.$transaction(async (tx) => {
-    if (input.lane === 'cash') await lockPettyCash(tx);
-    await tx.$queryRaw<Array<{ id: string }>>`
+  if (input.lane === 'cash') await lockPettyCash(tx);
+  await tx.$queryRaw<Array<{ id: string }>>`
       SELECT "id" FROM "CeresPaymentRequest" WHERE "id" = ${input.requestId} FOR UPDATE
     `;
 
@@ -407,8 +415,13 @@ export async function recordRequestMoneyEvent(input: RecordRequestMoneyInput) {
         });
       }
     }
-    return event;
-  });
+  return event;
+}
+
+// Every standalone caller (fulfillRequest, refundAdvance, the plain reverse endpoint):
+// open one transaction and run the core above inside it.
+export async function recordRequestMoneyEvent(input: RecordRequestMoneyInput) {
+  return prisma.$transaction((tx) => recordRequestMoneyEventInTx(tx, input));
 }
 
 export async function fulfillRequest(input: {
@@ -437,16 +450,21 @@ export async function refundAdvance(input: Omit<RecordRequestMoneyInput, 'kind'>
   return recordRequestMoneyEvent({ ...input, kind: 'refund' });
 }
 
-export async function reverseRequestMoneyEvent(input: {
+export interface ReverseMoneyEventInput {
   eventId: string;
   reason: string;
   createdById?: string | null;
   createdByName?: string;
   idempotencyKey?: string;
-}) {
-  const event = await prisma.ceresRequestMoneyEvent.findUnique({ where: { id: input.eventId } });
+}
+
+// In-tx composable core (see recordRequestMoneyEventInTx above) — requestVoid.ts's paid-
+// request void calls this directly on ITS OWN transaction client so the reversal and the
+// void status flip land atomically, with no second reversal implementation.
+export async function reverseRequestMoneyEventInTx(tx: CeresTx, input: ReverseMoneyEventInput) {
+  const event = await tx.ceresRequestMoneyEvent.findUnique({ where: { id: input.eventId } });
   if (!event) throw new RequestMoneyError('not_found');
-  return recordRequestMoneyEvent({
+  return recordRequestMoneyEventInTx(tx, {
     requestId: event.requestId,
     kind: 'reversal',
     lane: requestMoneyLaneSchema.parse(event.lane),
@@ -457,6 +475,10 @@ export async function reverseRequestMoneyEvent(input: {
     note: input.reason,
     idempotencyKey: input.idempotencyKey,
   });
+}
+
+export async function reverseRequestMoneyEvent(input: ReverseMoneyEventInput) {
+  return prisma.$transaction((tx) => reverseRequestMoneyEventInTx(tx, input));
 }
 
 export async function getAdvanceLiquidation(requestId: string) {

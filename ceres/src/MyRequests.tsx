@@ -13,6 +13,7 @@ import {
 import {
   baht,
   cancelStaffRequest,
+  getFlagCounts,
   getLineBind,
   listStaffRequests,
   type FulfillmentStatus,
@@ -20,6 +21,7 @@ import {
 } from './lib/api';
 import { REQUEST_TYPE_LABEL as TYPE_LABEL } from './lib/requestLabels';
 import { MediaThumb } from './lib/media';
+import FlagButton, { FlagBadge } from './FlagButton';
 
 // Re-exported (from the shared helper) so StaffHome's home-screen sections (open-advance
 // cards + the "รอดำเนินการ" compact list — see docs/CERES_STAFF_HOME_PLAN.md "1") can reuse
@@ -95,12 +97,16 @@ export default function MyRequests({
   const [confirmCancelId, setConfirmCancelId] = useState<string | null>(null);
   const [cancelBusyId, setCancelBusyId] = useState('');
   const [lineUnbound, setLineUnbound] = useState(false);
+  const [flagCounts, setFlagCounts] = useState<Record<string, number>>({});
 
   const load = useCallback(() => {
     setLoading(true);
     setError('');
     listStaffRequests('mine', 100)
-      .then((result) => setRows(result.requests))
+      .then((result) => {
+        setRows(result.requests);
+        getFlagCounts('request', result.requests.map((r) => r.id)).then(setFlagCounts).catch(() => {});
+      })
       .catch(() => setError('โหลดคำขอไม่สำเร็จ'))
       .finally(() => setLoading(false));
   }, []);
@@ -197,7 +203,9 @@ export default function MyRequests({
                   <MediaThumb id={request.requestPhotoUploadId} size={48} alt="รูปแนบคำขอ" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-bold text-base">{baht(request.amountNum)}</span>
+                      <span className="font-bold text-base flex items-center gap-1.5">
+                        {baht(request.amountNum)} <FlagBadge count={flagCounts[request.id]} />
+                      </span>
                       <span className={`px-2 py-0.5 rounded-full text-xs font-semibold shrink-0 ${status.cls}`}>
                         {status.label}
                       </span>
@@ -222,12 +230,15 @@ export default function MyRequests({
                       <dd>{new Date(request.createdAt).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })}</dd>
                     </dl>
 
-                    <button
-                      onClick={() => onOpenDetail(request)}
-                      className="w-full mt-3 min-h-[42px] rounded-lg border border-slate-300 text-slate-600 text-sm font-semibold flex items-center justify-center gap-1 hover:bg-slate-50"
-                    >
-                      <Eye size={14} /> ดูรายละเอียด / ประวัติ
-                    </button>
+                    <div className="flex items-center gap-3 mt-3">
+                      <button
+                        onClick={() => onOpenDetail(request)}
+                        className="flex-1 min-h-[42px] rounded-lg border border-slate-300 text-slate-600 text-sm font-semibold flex items-center justify-center gap-1 hover:bg-slate-50"
+                      >
+                        <Eye size={14} /> ดูรายละเอียด / ประวัติ
+                      </button>
+                      <FlagButton targetType="request" targetId={request.id} onFlagged={load} label="ติดธงให้ตรวจสอบ" />
+                    </div>
 
                     {editable && (
                       <div className="flex gap-2 mt-3 pt-3 border-t border-slate-100">

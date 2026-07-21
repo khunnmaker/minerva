@@ -27,6 +27,7 @@ import {
 import { REQUEST_TYPE_LABEL } from './lib/requestLabels';
 import { MediaThumb } from './lib/media';
 import { PayPanel } from './PayPanel';
+import FlagsReviewSection from './FlagsReviewSection';
 
 // v1 purge (2026-07-19) — MdRequests.tsx is gone; local copy matching MdMoney.tsx's pattern.
 function todayStr(): string {
@@ -102,6 +103,7 @@ export default function CeoOverview({
       ) : (
         <div className="space-y-4">
           <EscalationsSection escalations={data.escalations} onDecided={bump} />
+          <FlagsReviewSection onChanged={bump} />
           <CashSection cash={data.cash} onTopupDone={bump} />
           {showDailyOutflow && (
             <DailyOutflowSection

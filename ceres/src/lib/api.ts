@@ -752,6 +752,9 @@ export interface StaffRequest {
   fulfillmentStatus: FulfillmentStatus;
   neeDecision: { byId: string | null; byName: string; at: string; note: string } | null;
   ceoDecision: { byId: string | null; at: string; note: string } | null;
+  voidedById: string | null;
+  voidedAt: string | null;
+  voidReason: string;
   rowVersion: number;
   createdAt: string;
   updatedAt: string;
@@ -809,6 +812,42 @@ export const cancelStaffRequest = (id: string, note?: string) =>
     method: 'POST',
     body: JSON.stringify({ note }),
   });
+
+// CEO-only removal of a request in ANY state (owner directive, 2026-07-21) — see
+// api/src/ceres/requestVoid.ts. A paid request auto-reverses its fulfillment first, in the
+// same server-side transaction; the UI never has to orchestrate that itself.
+export const voidStaffRequest = (id: string, reason: string) =>
+  authed<{ request: StaffRequest }>(`/api/ceres/requests/${id}/void`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
+
+export interface VoidBlocker {
+  id: string;
+  status: string;
+  amount: string;
+  category?: string;
+}
+const VOID_ERROR_TH: Record<string, string> = {
+  not_found: 'ไม่พบรายการ',
+  already_void: 'รายการนี้ถูกยกเลิกไปแล้ว',
+  has_liquidation_children: 'ต้องจัดการรายการลูกก่อน',
+  has_outstanding_balance: 'ยังมียอดเงินค้างที่ยังไม่ได้คืนหรือหักล้าง',
+};
+// Detail carried on a has_liquidation_children / has_outstanding_balance 409 — see
+// requestError body shape in routes/ceres/requests.ts's voidError().
+export function describeVoidError(err: unknown): { message: string; blockers?: VoidBlocker[]; remainingOutstanding?: string } {
+  if (err instanceof ApiError && err.body && typeof err.body === 'object' && 'error' in err.body) {
+    const body = err.body as { error: unknown; blockers?: VoidBlocker[]; remainingOutstanding?: string };
+    const code = String(body.error);
+    return {
+      message: VOID_ERROR_TH[code] ?? describeMoneyError(err),
+      blockers: body.blockers,
+      remainingOutstanding: body.remainingOutstanding,
+    };
+  }
+  return { message: 'ยกเลิกรายการไม่สำเร็จ ลองใหม่อีกครั้ง' };
+}
 
 export const neeDecision = (id: string, decision: 'approve' | 'reject', note?: string) =>
   authed<{ request: StaffRequest }>(`/api/ceres/requests/${id}/nee-decision`, {
@@ -1004,6 +1043,61 @@ export function describeMoneyError(err: unknown): string {
     return MONEY_ERROR_TH[code] ?? 'ทำรายการไม่สำเร็จ ลองใหม่อีกครั้ง';
   }
   return 'ทำรายการไม่สำเร็จ ลองใหม่อีกครั้ง';
+}
+
+// ---------------------------------------------------------------------------
+// Flags — "each person should be able to flag any transaction for review" (owner
+// directive, 2026-07-21). See api/src/ceres/flags.ts + routes/ceres/flags.ts.
+// ---------------------------------------------------------------------------
+
+export type FlagTargetType = 'request' | 'expense';
+export type FlagStatus = 'open' | 'resolved';
+export interface CeresFlag {
+  id: string;
+  targetType: FlagTargetType;
+  targetId: string;
+  flaggedById: string | null;
+  flaggedByName: string;
+  note: string;
+  status: FlagStatus;
+  createdAt: string;
+  resolvedById: string | null;
+  resolvedByName: string;
+  resolvedAt: string | null;
+  resolutionNote: string;
+  // Batch-loaded target summary — see routes/ceres/flags.ts's loadTargetSummaries().
+  subject: { payee?: string; partyName?: string; amount: string; category?: string; requestType?: string; status?: string } | null;
+}
+
+export const createFlag = (targetType: FlagTargetType, targetId: string, note: string) =>
+  authed<{ flag: CeresFlag }>('/api/ceres/flags', { method: 'POST', body: JSON.stringify({ targetType, targetId, note }) });
+
+export const listFlags = (status: FlagStatus = 'open') =>
+  authed<{ flags: CeresFlag[] }>(`/api/ceres/flags${queryString({ status })}`);
+
+export const resolveFlag = (id: string, resolutionNote: string) =>
+  authed<{ flag: CeresFlag }>(`/api/ceres/flags/${id}/resolve`, { method: 'POST', body: JSON.stringify({ resolutionNote }) });
+
+// Open-flag counts for a batch of ids — any authenticated Ceres user (see
+// flags.ts's getFlagCounts doc) so a staff member's OWN cards can show a 🚩 badge too.
+export const getFlagCounts = async (targetType: FlagTargetType, targetIds: string[]): Promise<Record<string, number>> => {
+  const unique = [...new Set(targetIds)];
+  if (unique.length === 0) return {};
+  const r = await authed<{ counts: Record<string, number> }>(
+    `/api/ceres/flags/counts${queryString({ targetType, targetIds: unique.join(',') })}`,
+  );
+  return r.counts;
+};
+
+const FLAG_ERROR_TH: Record<string, string> = {
+  not_found: 'ไม่พบรายการ',
+  already_flagged: 'คุณติดธงรายการนี้ไว้แล้ว (ยังไม่ได้แก้ไข)',
+};
+export function describeFlagError(err: unknown): string {
+  if (err instanceof ApiError && err.body && typeof err.body === 'object' && 'error' in err.body) {
+    return FLAG_ERROR_TH[String((err.body as { error: unknown }).error)] ?? 'ติดธงไม่สำเร็จ ลองใหม่อีกครั้ง';
+  }
+  return 'ติดธงไม่สำเร็จ ลองใหม่อีกครั้ง';
 }
 
 // ---------------------------------------------------------------------------

@@ -472,15 +472,18 @@ export function p1Routes(app: FastifyInstance) {
     },
   );
 
-  // POST /api/ceres/expenses/:id/void { reason } — gm/ceo soft-delete of ANY entry
-  // (approved/settled/rejected/pending). Unlike DELETE (which hard-removes a pending
-  // draft), void KEEPS the row: it's excluded from every total/board/settlement but stays
-  // visible struck-through with who/when/why, so a closed day's books stay auditable.
-  // A voided settled entry does NOT alter its already-closed settlement snapshot (history
-  // is immutable) — it just stops counting in the live views and future reports.
+  // POST /api/ceres/expenses/:id/void { reason } — CEO-ONLY soft-delete of ANY entry
+  // (approved/settled/rejected/pending). Tightened from gm/ceo (2026-07-21 owner directive:
+  // "I and only CEO should have the ability to remove any transaction" — GM keeps nothing
+  // destructive now, they flag instead, see POST /api/ceres/flags). Unlike DELETE (which
+  // hard-removes a pending draft), void KEEPS the row: it's excluded from every
+  // total/board/settlement but stays visible struck-through with who/when/why, so a closed
+  // day's books stay auditable. A voided settled entry does NOT alter its already-closed
+  // settlement snapshot (history is immutable) — it just stops counting in the live views
+  // and future reports.
   app.post<{ Params: { id: string } }>(
     '/api/ceres/expenses/:id/void',
-    { preHandler: requireCeresRole('gm', 'ceo') },
+    { preHandler: requireCeresRole('ceo') },
     async (req, reply) => {
       const body = z.object({ reason: z.string().min(1).max(300) }).safeParse(req.body);
       if (!body.success) return reply.code(400).send({ error: 'invalid_body' });

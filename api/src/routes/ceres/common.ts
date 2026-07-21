@@ -64,6 +64,7 @@ export function toStaffRequestRow(
     aiScreenStatus: string; aiReviewId: string | null; neeDecidedById: string | null;
     neeDecidedByName: string; neeDecidedAt: Date | null; neeDecisionNote: string;
     decidedById: string | null; decidedAt: Date | null; decisionNote: string;
+    voidedById: string | null; voidedAt: Date | null; voidReason: string;
     rowVersion: number; createdAt: Date; updatedAt: Date;
   },
   review?: { verdict: string; reasoning: string; createdAt: Date } | null,
@@ -104,6 +105,9 @@ export function toStaffRequestRow(
       at: r.decidedAt.toISOString(),
       note: r.decisionNote,
     } : null,
+    voidedById: r.voidedById,
+    voidedAt: r.voidedAt ? r.voidedAt.toISOString() : null,
+    voidReason: r.voidReason,
     rowVersion: r.rowVersion,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),

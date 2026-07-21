@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2, AlertTriangle, RefreshCw, Trash2, Ban } from 'lucide-react';
-import { listExpenses, deleteExpense, voidExpense, baht, type Expense, type ExpenseStatus } from './lib/api';
+import { listExpenses, deleteExpense, voidExpense, getFlagCounts, baht, type Expense, type ExpenseStatus } from './lib/api';
 import { useCeres } from './lib/bootstrapContext';
+import FlagButton, { FlagBadge } from './FlagButton';
 
 const STATUS_META: Record<ExpenseStatus, { label: string; cls: string }> = {
   pending: { label: 'รอตรวจ', cls: 'bg-amber-100 text-amber-700' },
@@ -13,6 +14,7 @@ const STATUS_META: Record<ExpenseStatus, { label: string; cls: string }> = {
 
 export default function MdExpenses() {
   const { bootstrap } = useCeres();
+  const isCeo = bootstrap.role === 'ceo';
   const [status, setStatus] = useState<ExpenseStatus | ''>('');
   const [partyId, setPartyId] = useState('');
   const [from, setFrom] = useState('');
@@ -21,6 +23,7 @@ export default function MdExpenses() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busyId, setBusyId] = useState('');
+  const [flagCounts, setFlagCounts] = useState<Record<string, number>>({});
 
   const load = useCallback(() => {
     setLoading(true);
@@ -32,7 +35,10 @@ export default function MdExpenses() {
       from: from || undefined,
       to: to || undefined,
     })
-      .then((r) => setRows(r.expenses))
+      .then((r) => {
+        setRows(r.expenses);
+        getFlagCounts('expense', r.expenses.map((e) => e.id)).then(setFlagCounts).catch(() => {});
+      })
       .catch(() => setError('โหลดข้อมูลไม่สำเร็จ'))
       .finally(() => setLoading(false));
   }, [status, partyId, from, to]);
@@ -126,7 +132,9 @@ export default function MdExpenses() {
                   )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
-                      <span className={`font-semibold text-sm ${voided ? 'line-through' : ''}`}>{r.partyName}</span>
+                      <span className={`font-semibold text-sm flex items-center gap-1.5 ${voided ? 'line-through' : ''}`}>
+                        {r.partyName} <FlagBadge count={flagCounts[r.id]} />
+                      </span>
                       <span className={`px-2 py-0.5 rounded-full text-xs font-semibold shrink-0 ${STATUS_META[r.status].cls}`}>
                         {STATUS_META[r.status].label}
                       </span>
@@ -148,9 +156,13 @@ export default function MdExpenses() {
                       <div className="text-xs text-slate-500 mt-1">ยกเลิกเพราะ: {r.voidReason}</div>
                     )}
 
-                    {/* gm/ceo actions — pending drafts hard-delete; anything else voids (kept, struck-through) */}
+                    {/* ติดธง — anyone (GM/CEO here, both already see every expense). Delete
+                        (pending drafts) stays gm/ceo; ยกเลิก (void) is CEO-ONLY (owner
+                        directive, 2026-07-21 — "I and only CEO should have the ability to
+                        remove any transaction"). GM keeps nothing destructive — flag instead. */}
                     {!voided && (
-                      <div className="flex justify-end gap-2 mt-2">
+                      <div className="flex justify-end items-center gap-3 mt-2">
+                        <FlagButton targetType="expense" targetId={r.id} onFlagged={load} />
                         {r.status === 'pending' ? (
                           <button
                             onClick={() => onDelete(r)}
@@ -159,7 +171,7 @@ export default function MdExpenses() {
                           >
                             {busy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} ลบ
                           </button>
-                        ) : (
+                        ) : isCeo ? (
                           <button
                             onClick={() => onVoid(r)}
                             disabled={busy}
@@ -167,7 +179,7 @@ export default function MdExpenses() {
                           >
                             {busy ? <Loader2 size={13} className="animate-spin" /> : <Ban size={13} />} ยกเลิก
                           </button>
-                        )}
+                        ) : null}
                       </div>
                     )}
                   </div>

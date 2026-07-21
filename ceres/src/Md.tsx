@@ -25,9 +25,11 @@ import {
   getTransferReconciliation,
   getCeoOverview,
   listExpenses,
+  listFlags,
   listStaffRequests,
   logout as logoutSuite,
 } from './lib/api';
+import FlagsReviewSection from './FlagsReviewSection';
 import AppSwitcher from './AppSwitcher';
 import MdBoard from './MdBoard';
 import MdApproval, { type ApprovalPrefill } from './MdApproval';
@@ -225,7 +227,7 @@ function ManagementApp({ isCeo }: { isCeo: boolean }) {
   // pays for the extra requests (mobile's NeeHome/CeoHome already fetch their own numbers for
   // their own cards; this is a separate, desktop-nav-only fetch, refreshed on every tab switch
   // for a reasonably "live" count without inventing a push channel). ─────────────────────────
-  const [gmCounts, setGmCounts] = useState<{ approvals?: number; legacyApprovals?: number; fulfillment?: number; recon?: number }>({});
+  const [gmCounts, setGmCounts] = useState<{ approvals?: number; legacyApprovals?: number; fulfillment?: number; recon?: number; flags?: number }>({});
   useEffect(() => {
     if (!isDesktop || isCeo) return;
     let cancelled = false;
@@ -252,6 +254,11 @@ function ManagementApp({ isCeo }: { isCeo: boolean }) {
         setGmCounts((c) => ({ ...c, recon: n }));
       })
       .catch(() => {});
+    // ติดธง (2026-07-21) — its own section inside the อนุมัติ tab, count folded into that
+    // same tab's pill (owner: "no new top-level tabs").
+    listFlags('open')
+      .then((r) => { if (!cancelled) setGmCounts((c) => ({ ...c, flags: r.flags.length })); })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [isDesktop, isCeo, view]);
 
@@ -259,10 +266,15 @@ function ManagementApp({ isCeo }: { isCeo: boolean }) {
   // ภาพรวม, CEO one-flow 2026-07-21 — see docs/CERES_DESKTOP_NAV.md). CeoOverview/CeoHome
   // fetch their own full escalations list once ภาพรวม is actually mounted; this effect exists
   // purely to keep the tab-strip pills fed while a different tab is showing.
-  const [ceoBadges, setCeoBadges] = useState<{ queue?: number; fulfillment?: number; recon?: number }>({});
+  const [ceoBadges, setCeoBadges] = useState<{ queue?: number; fulfillment?: number; recon?: number; flags?: number }>({});
   const loadCeoBadges = useCallback(() => {
     getCeoOverview(todayStr())
       .then((d) => setCeoBadges((c) => ({ ...c, queue: d.escalations.length, recon: d.transferReconciliation.unmatched })))
+      .catch(() => {});
+    // ติดธง (2026-07-21) — section under the escalations in ภาพรวม, count folded into that
+    // same tab's pill (owner: "no new top-level tabs").
+    listFlags('open')
+      .then((r) => setCeoBadges((c) => ({ ...c, flags: r.flags.length })))
       .catch(() => {});
   }, []);
   useEffect(() => {
@@ -375,7 +387,7 @@ function ManagementApp({ isCeo }: { isCeo: boolean }) {
   // pill count badges — same look as before, just flattened. ────────────────────────────────
   type Tab = { key: View; label: string; icon: React.ReactNode; count?: number };
   const gmTabs: Tab[] = [
-    { key: 'approvals', label: 'อนุมัติ', icon: <ClipboardCheck size={16} />, count: (gmCounts.approvals ?? 0) + (gmCounts.legacyApprovals ?? 0) },
+    { key: 'approvals', label: 'อนุมัติ', icon: <ClipboardCheck size={16} />, count: (gmCounts.approvals ?? 0) + (gmCounts.legacyApprovals ?? 0) + (gmCounts.flags ?? 0) },
     { key: 'fulfillment', label: 'รอจ่าย', icon: <CircleDollarSign size={16} />, count: gmCounts.fulfillment },
     { key: 'recon', label: 'โอน/สลิป', icon: <Scale size={16} />, count: gmCounts.recon },
     { key: 'cashbox', label: 'กล่องเงินสด', icon: <PiggyBank size={16} /> },
@@ -388,7 +400,7 @@ function ManagementApp({ isCeo }: { isCeo: boolean }) {
   // count (ceoBadges.queue) moves onto ภาพรวม. "รอจ่าย" also unifies with GM's label — the old
   // CEO-only "จ่าย/ซื้อ" name for the same NeeFulfillmentQueue destination.
   const ceoTabs: Tab[] = [
-    { key: 'home', label: 'ภาพรวม', icon: <LayoutDashboard size={16} />, count: ceoBadges.queue },
+    { key: 'home', label: 'ภาพรวม', icon: <LayoutDashboard size={16} />, count: (ceoBadges.queue ?? 0) + (ceoBadges.flags ?? 0) },
     { key: 'legacy-fulfillment', label: 'รอจ่าย', icon: <CircleDollarSign size={16} />, count: ceoBadges.fulfillment },
     { key: 'recon', label: 'โอน/สลิป', icon: <Scale size={16} />, count: ceoBadges.recon },
     { key: 'cashbox', label: 'กล่องเงินสด', icon: <PiggyBank size={16} /> },
@@ -489,7 +501,12 @@ function ManagementApp({ isCeo }: { isCeo: boolean }) {
               highlightRequestId={highlightApprovalId}
             />
           ) : (
-            <NeeApprovalQueue highlightRequestId={highlightApprovalId} />
+            <div className="space-y-6">
+              <NeeApprovalQueue highlightRequestId={highlightApprovalId} />
+              <div className="pt-4 border-t border-slate-200">
+                <FlagsReviewSection />
+              </div>
+            </div>
           )
         )}
         {activeView === 'fulfillment' && !isCeo && <NeeFulfillmentQueue />}
@@ -598,6 +615,9 @@ function ApprovalsComposedView({
       <div className="pt-4 border-t border-slate-200">
         <div className="text-sm font-semibold text-slate-500 mb-2">ตรวจใบเสร็จค่าใช้จ่าย</div>
         <MdApproval prefill={prefill} onConsumePrefill={onConsumePrefill} />
+      </div>
+      <div className="pt-4 border-t border-slate-200">
+        <FlagsReviewSection />
       </div>
     </div>
   );

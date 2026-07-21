@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   AlertTriangle,
+  Ban,
   Banknote,
   CheckCircle2,
   Landmark,
@@ -12,10 +13,12 @@ import {
 import {
   baht,
   describeMoneyError,
+  describeVoidError,
   getRequestLiquidation,
   getStaffRequest,
   newIdempotencyKey,
   reverseRequestMoneyEvent,
+  voidStaffRequest,
   type AdvanceLiquidation,
   type ApprovalStatus,
   type FulfillmentStatus,
@@ -27,6 +30,7 @@ import { REQUEST_TYPE_LABEL as TYPE_LABEL } from './lib/requestLabels';
 import { useCeres } from './lib/bootstrapContext';
 import { MediaThumb } from './lib/media';
 import ExpenseSheet from './ExpenseSheet';
+import FlagButton from './FlagButton';
 
 // Shared timeline/liquidation view for one v2 staff request — used by both the
 // requester (MyRequests) and management (NeeFulfillmentQueue, MdRecon). See
@@ -94,12 +98,14 @@ export default function RequestDetail({
 }) {
   const { agent, bootstrap } = useCeres();
   const isManager = bootstrap.role === 'gm' || bootstrap.role === 'ceo';
+  const isCeo = bootstrap.role === 'ceo';
 
   const [request, setRequest] = useState<StaffRequest | null>(null);
   const [events, setEvents] = useState<RequestEvent[]>([]);
   const [moneyEvents, setMoneyEvents] = useState<RequestMoneyEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [voidBusy, setVoidBusy] = useState(false);
 
   const [liquidation, setLiquidation] = useState<AdvanceLiquidation | null>(null);
   const [liquidationLoading, setLiquidationLoading] = useState(false);
@@ -151,6 +157,32 @@ export default function RequestDetail({
     load();
     loadLiquidation();
     onChanged?.();
+  }
+
+  // CEO-only removal of this request in ANY state (owner directive, 2026-07-21) — a paid
+  // request auto-reverses its fulfillment server-side, in the same transaction as the void
+  // itself (see api/src/ceres/requestVoid.ts). See MdExpenses.tsx for the same tightening
+  // on the expense-void action (gm/ceo → ceo-only).
+  async function onVoidRequest() {
+    const reason = window.prompt('ยกเลิกรายการนี้ทั้งหมด (CEO เท่านั้น) — กรอกเหตุผล (จำเป็น)');
+    if (reason == null) return;
+    const trimmed = reason.trim();
+    if (!trimmed) { window.alert('ต้องกรอกเหตุผล'); return; }
+    setVoidBusy(true);
+    try {
+      await voidStaffRequest(requestId, trimmed);
+      notify('ยกเลิกรายการแล้ว');
+    } catch (err) {
+      const described = describeVoidError(err);
+      const extra = described.blockers?.length
+        ? `\nต้องจัดการรายการลูกก่อน: ${described.blockers.map((b) => `${b.category ?? ''} ${baht(Number(b.amount))}`).join(', ')}`
+        : described.remainingOutstanding
+          ? `\nยอดค้าง: ${baht(Number(described.remainingOutstanding))}`
+          : '';
+      window.alert(described.message + extra);
+    } finally {
+      setVoidBusy(false);
+    }
   }
 
   const canAddLiquidationExpense =
@@ -219,6 +251,27 @@ export default function RequestDetail({
               {request.requestPhotoUploadId && (
                 <div className="mt-2">
                   <MediaThumb id={request.requestPhotoUploadId} size={72} alt="รูปแนบคำขอ" rounded="rounded-xl" />
+                </div>
+              )}
+              {request.approvalStatus === 'void' && request.voidReason && (
+                <div className="mt-2 text-xs text-slate-500">ยกเลิกเพราะ: {request.voidReason}</div>
+              )}
+
+              {/* ติดธง — everyone who can see this request (flag button never hides on
+                  ownership, server enforces visibility). ยกเลิกรายการ — CEO only, any state
+                  (owner directive, 2026-07-21). */}
+              {request.approvalStatus !== 'void' && (
+                <div className="flex items-center justify-end gap-3 mt-3 pt-3 border-t border-slate-100">
+                  <FlagButton targetType="request" targetId={request.id} onFlagged={() => notify('ติดธงแล้ว')} />
+                  {isCeo && (
+                    <button
+                      onClick={onVoidRequest}
+                      disabled={voidBusy}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-rose-600 hover:text-rose-700 disabled:opacity-50"
+                    >
+                      {voidBusy ? <Loader2 size={13} className="animate-spin" /> : <Ban size={13} />} ยกเลิกรายการ
+                    </button>
+                  )}
                 </div>
               )}
             </div>

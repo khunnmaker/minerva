@@ -9,6 +9,7 @@ import { ceoRoutes } from './ceo.js';
 import { statementsRoutes } from './statements.js';
 import { exportsRoutes } from './exports.js';
 import { categoryAdminRoutes } from './categories.js';
+import { flagsRoutes } from './flags.js';
 
 // Ceres (expenses & petty cash) API. Two PUBLIC routes (receipt image serving —
 // tokenized, and the messenger login-name picker) plus a scoped sub-plugin gated
@@ -45,5 +46,6 @@ export async function ceresRoutes(app: FastifyInstance) {
     statementsRoutes(scoped);
     exportsRoutes(scoped);
     categoryAdminRoutes(scoped);
+    flagsRoutes(scoped);
   });
 }

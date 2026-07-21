@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Loader2, Scale, Send } from 'lucide-react';
 import { getCeoOverview, type CeoOverview as CeoOverviewData } from './lib/api';
 import { CashSection, DailyOutflowSection, EscalationsSection, FlaggedExpensesSection, SectionCard, SettlementSection } from './CeoOverview';
+import FlagsReviewSection from './FlagsReviewSection';
 
 // v1 purge (2026-07-19) — MdRequests.tsx is gone; local copy matching MdMoney.tsx's pattern.
 function todayStr(): string {
@@ -63,6 +64,7 @@ export default function CeoHome({ onGoOwnRequest }: { onGoOwnRequest: () => void
         </div>
       </button>
       <EscalationsSection escalations={data.escalations} onDecided={bump} />
+      <FlagsReviewSection onChanged={bump} />
       <CashSection cash={data.cash} onTopupDone={bump} />
 
       <DailyOutflowSection dailyOutflow={data.dailyOutflow} />

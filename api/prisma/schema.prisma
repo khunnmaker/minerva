@@ -1206,6 +1206,32 @@ model CeresAIReview {
   @@index([subjectType, subjectId])
 }
 
+// Owner rule (2026-07-21): "each person should be able to flag any transaction for
+// review" — any Ceres persona can flag a request or expense they can already see; GM/CEO
+// triage the open queue and resolve. Additive, no seed rows. targetType is deliberately a
+// free String (not a DB enum, matching the rest of Ceres) — 'cashTxn' is a RESERVED value
+// for a future cash-movement flag lane (see api/src/ceres/flags.ts); today's API only
+// accepts 'request' | 'expense'. One open flag per (targetType, targetId, flaggedById) is
+// enforced in the application layer (see createFlag), not a DB constraint.
+model CeresFlag {
+  id             String    @id @default(cuid())
+  targetType     String // request | expense | cashTxn (reserved, unwired)
+  targetId       String
+  flaggedById    String?
+  flaggedByName  String    @default("")
+  note           String    @default("")
+  status         String    @default("open") // open | resolved
+  createdAt      DateTime  @default(now())
+  resolvedById   String?
+  resolvedByName String    @default("")
+  resolvedAt     DateTime?
+  resolutionNote String    @default("")
+
+  @@index([targetType, targetId, status])
+  @@index([status, createdAt])
+  @@index([flaggedById])
+}
+
 model CeresStatementImport {
   id           String   @id @default(cuid())
   fileName     String   @default("")

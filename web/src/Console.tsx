@@ -1593,10 +1593,11 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
         <div className="flex items-center gap-2">
           <Avatar src={c.pictureUrl} size={32} />
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1">
-              <span className="font-medium text-sm truncate">{nameOf(c)}</span>
-              {waiting && <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" title="รอตอบ" />}
+            <div className="font-medium text-sm truncate">{nameOf(c)}</div>
+            <div className="text-[11px] text-slate-400 flex items-center gap-1">
+              <Clock size={10} /> {fmtTime(c.lastSeen)}
               <span className="ml-auto flex items-center gap-1 shrink-0">
+                {waiting && <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" title="รอตอบ" />}
                 {c.suggestedStage && c.suggestedStage !== c.stage && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title={'AI แนะนำ: ' + c.suggestedStage} />}
                 {c.stage && <span className="text-[9px] px-1 py-0.5 rounded bg-indigo-100 text-indigo-700">{c.stage}</span>}
                 {c.category && <span className="text-[9px] px-1 py-0.5 rounded bg-sky-100 text-sky-700">{c.category}</span>}
@@ -1609,7 +1610,6 @@ export default function Console({ agent, onLogout }: { agent: Agent; onLogout: (
                 </span>
               </span>
             </div>
-            <div className="text-[11px] text-slate-400 flex items-center gap-1"><Clock size={10} /> {fmtTime(c.lastSeen)}</div>
           </div>
         </div>
       </button>

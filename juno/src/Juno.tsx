@@ -388,6 +388,10 @@ function PaymentsView({ view, onChanged, canDelete, isCeo }: { view: Exclude<Vie
   const [addOpen, setAddOpen] = useState(false);
   // row multi-select (checkbox column): a Set of payment ids, cleared on reload/filter/tab switch
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  // Shift-click range-select anchor (Gmail semantics) — the last row clicked WITHOUT shift.
+  // Cleared alongside checkedIds whenever the filter/tab changes (an anchor pointing at a row
+  // no longer on screen would produce a nonsensical range).
+  const anchorId = useRef<string | null>(null);
   // non-null → render the batch-check queue (see BatchCheckDialog) instead of the list
   const [batchQueue, setBatchQueue] = useState<Payment[] | null>(null);
   // bulk-action bar: running state + a brief result line ("สำเร็จ X/N")
@@ -453,7 +457,7 @@ function PaymentsView({ view, onChanged, canDelete, isCeo }: { view: Exclude<Vie
   // Row checkboxes are cleared whenever the list reloads/filters change or the tab switches —
   // a stale selection referring to rows no longer on screen would be confusing/dangerous for
   // bulk actions (owner requirement).
-  useEffect(() => { setCheckedIds(new Set()); setBulkResult(''); setBulkVoidConfirm(false); setBulkDeleteConfirm(false); }, [view, q, status, method, from, to]);
+  useEffect(() => { setCheckedIds(new Set()); anchorId.current = null; setBulkResult(''); setBulkVoidConfirm(false); setBulkDeleteConfirm(false); }, [view, q, status, method, from, to]);
 
   // Reflect a drawer action back into the list + selected row without a full reload.
   function applyUpdate(p: Payment) {
@@ -498,16 +502,44 @@ function PaymentsView({ view, onChanged, canDelete, isCeo }: { view: Exclude<Vie
   const checkableRows = checkedRows.filter((r) => r.status !== 'void' && r.status !== 'recorded' && !r.wrongTransfer && r.source !== 'credit');
   const printableRows = checkedRows.filter(printablePayment);
   const allVisibleChecked = rows.length > 0 && rows.every((r) => checkedIds.has(r.id));
+  // Bulk ได้รับเงินแล้ว eligibility (CEO-only): cash/cheque rows not yet received, not void.
+  // Available in ANY view — a cash/cheque row filtered up on the main inbox is just as
+  // receivable as one on the dedicated เงินสด/เช็ค tab, not only there.
+  const eligible = checkedRows.filter(
+    (r) => (r.source === 'cash' || r.source === 'cheque') && !r.receivedAt && r.status !== 'void'
+  );
 
-  // Note: the checkbox's own onClick (below, at the call site) stops propagation so checking
-  // a row never opens its drawer — this toggle is purely the Set update.
-  function toggleRow(id: string) {
-    setCheckedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  // Shift-click range select (Gmail semantics). All the logic lives in the checkbox's onClick
+  // (so we can read e.shiftKey) rather than onChange — onClick also stops propagation so
+  // checking a row never opens its drawer. `targetChecked` is the state the clicked checkbox
+  // is ABOUT to take; on a plain click that's just this row, on a shift-click with a live
+  // anchor it's applied to every row in the inclusive [anchor, clicked] slice (by rendered
+  // `rows` order). The anchor always moves to the row just clicked, shift or not.
+  function handleRowCheckboxClick(e: React.MouseEvent<HTMLInputElement>, id: string) {
+    e.stopPropagation();
+    const targetChecked = !checkedIds.has(id);
+    const anchor = anchorId.current;
+    const anchorIdx = anchor ? rows.findIndex((r) => r.id === anchor) : -1;
+    if (e.shiftKey && anchorIdx !== -1) {
+      const clickedIdx = rows.findIndex((r) => r.id === id);
+      const [lo, hi] = anchorIdx <= clickedIdx ? [anchorIdx, clickedIdx] : [clickedIdx, anchorIdx];
+      setCheckedIds((prev) => {
+        const next = new Set(prev);
+        for (let i = lo; i <= hi; i++) {
+          if (targetChecked) next.add(rows[i].id);
+          else next.delete(rows[i].id);
+        }
+        return next;
+      });
+    } else {
+      setCheckedIds((prev) => {
+        const next = new Set(prev);
+        if (targetChecked) next.add(id);
+        else next.delete(id);
+        return next;
+      });
+    }
+    anchorId.current = id;
   }
   function toggleAllVisible() {
     setCheckedIds((prev) => {
@@ -546,6 +578,14 @@ function PaymentsView({ view, onChanged, canDelete, isCeo }: { view: Exclude<Vie
   function bulkFlagToggle() {
     const flaggingOff = view === 'flags';
     void runBulk(checkedRows, (p) => setFlag(p.id, !flaggingOff));
+  }
+  // Bulk ได้รับเงินแล้ว (CEO-only). No confirm dialog — mirrors ปักธง's no-confirm pattern, and
+  // the per-row undo (confirmReceived(id, false)) covers a mis-click. Runs over `eligible`
+  // only (not all checkedRows) so a mixed selection quietly skips ineligible rows rather than
+  // erroring on them. runBulk's full load() afterward is required: the server's autoRecord/
+  // overpay sweeps can advance OTHER rows' stages as a side effect of these receives.
+  function bulkConfirmReceived() {
+    void runBulk(eligible, (p) => confirmReceived(p.id, true));
   }
   function bulkVoid() {
     if (!bulkVoidConfirm) {
@@ -710,6 +750,18 @@ function PaymentsView({ view, onChanged, canDelete, isCeo }: { view: Exclude<Vie
               <ClipboardCheck size={14} /> ตรวจแล้ว
             </button>
           )}
+          {/* Bulk ได้รับเงินแล้ว (feature: mark many cash/cheque rows received at once) — CEO-only,
+              any view (a cash/cheque row filtered up on the main inbox is just as receivable as
+              one on the dedicated เงินสด/เช็ค tab). No confirm dialog, mirrors ปักธง below. */}
+          {isCeo && eligible.length > 0 && (
+            <button
+              onClick={bulkConfirmReceived}
+              disabled={bulkBusy}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-teal-600/90 hover:bg-teal-600 disabled:opacity-40"
+            >
+              <HandCoins size={14} /> ได้รับเงินแล้ว ({eligible.length})
+            </button>
+          )}
           {/* Bulk flag: on the flags tab this CLEARS (เคลียร์ธง) — CEO-only, mirrors the server's
               flagged===false supervisor gate. Elsewhere it RAISES (ปักธง), which finance may do.
               So the button is hidden on the flags tab for non-CEO, kept on the others. */}
@@ -832,12 +884,12 @@ function PaymentsView({ view, onChanged, canDelete, isCeo }: { view: Exclude<Vie
                     onClick={() => setSelected(p)}
                     className={`border-t border-slate-100 cursor-pointer hover:bg-emerald-50/40 ${selected?.id === p.id ? 'bg-emerald-50' : ''}`}
                   >
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-2 select-none">
                       <input
                         type="checkbox"
                         checked={checkedIds.has(p.id)}
-                        onChange={() => toggleRow(p.id)}
-                        onClick={(e) => e.stopPropagation()}
+                        onChange={() => {}}
+                        onClick={(e) => handleRowCheckboxClick(e, p.id)}
                         className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-400"
                       />
                     </td>

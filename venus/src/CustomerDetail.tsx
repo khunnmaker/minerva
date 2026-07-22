@@ -3,16 +3,16 @@ import {
   ArrowLeft, Loader2, AlertTriangle, MapPin, Phone, User, CreditCard, Truck, Hash,
   ShoppingCart, MessageCircle, Wallet, StickyNote, Clock, ChevronDown, ChevronUp,
   ShieldAlert, PackageSearch, TrendingUp, TrendingDown, Pin, Save, Sparkles,
-  Link2, Gift,
+  Link2, Gift, Footprints, CheckSquare, Square, Flag,
 } from 'lucide-react';
 import {
-  getCustomer, saveNote, trendArrow, trendColor, formatBaht, formatDate,
+  getCustomer, getVisits, postActionItemDone, saveNote, trendArrow, trendColor, formatBaht, formatDate,
   type VenusCustomer, type CustomerStats, type Purchase, type ProductCycle, type CustomerPrecautions,
-  type CustomerNote, type AiCard,
+  type CustomerNote, type AiCard, type VenusVisit,
 } from './lib/api';
 import { CreditChip, SegmentChip } from './CustomerList';
 
-type Tab = 'overview' | 'purchases' | 'chat' | 'payments' | 'notes';
+type Tab = 'overview' | 'purchases' | 'visits' | 'chat' | 'payments' | 'notes';
 
 // The rep-lens card: header (name/code/credit/segment/trend/note pin) + ภาพรวม (RFM +
 // active signals + precautions) + การซื้อ (purchase timeline + per-product cycle table) +
@@ -29,6 +29,7 @@ export default function CustomerDetail({ code, onBack }: { code: string; onBack:
   const [productCycles, setProductCycles] = useState<ProductCycle[]>([]);
   const [precautions, setPrecautions] = useState<CustomerPrecautions | null>(null);
   const [aiCard, setAiCard] = useState<AiCard | null>(null);
+  const [visits, setVisits] = useState<VenusVisit[]>([]);
   const [busy, setBusy] = useState(true);
   const [err, setErr] = useState('');
   const [tab, setTab] = useState<Tab>('overview');
@@ -37,6 +38,7 @@ export default function CustomerDetail({ code, onBack }: { code: string; onBack:
     setBusy(true);
     setErr('');
     setCustomer(null);
+    setVisits([]);
     setTab('overview');
     getCustomer(code)
       .then((r) => {
@@ -49,11 +51,22 @@ export default function CustomerDetail({ code, onBack }: { code: string; onBack:
       })
       .catch((e) => setErr(e instanceof Error && e.message.includes('404') ? 'ไม่พบลูกค้ารายนี้' : 'โหลดข้อมูลลูกค้าไม่สำเร็จ'))
       .finally(() => setBusy(false));
+    // Best-effort side load — a visits fetch failure must not block the rest of the card.
+    getVisits({ customerCode: code }).then(setVisits).catch(() => setVisits([]));
   }, [code]);
 
   function handleNoteSaved(note: CustomerNote | null) {
     setPrecautions((prev) => (prev ? { ...prev, note } : prev));
   }
+
+  function handleActionItemToggle(itemId: string, done: boolean) {
+    setVisits((prev) => prev.map((v) => ({
+      ...v,
+      actionItems: v.actionItems.map((item) => (item.id === itemId ? { ...item, done } : item)),
+    })));
+  }
+
+  const lastVisitAt = visits[0]?.visitAt ?? null;
 
   return (
     <div>
@@ -71,11 +84,12 @@ export default function CustomerDetail({ code, onBack }: { code: string; onBack:
         </div>
       ) : customer ? (
         <div>
-          <CustomerHeader customer={customer} stats={stats} note={precautions?.note ?? null} onPinClick={() => setTab('notes')} />
+          <CustomerHeader customer={customer} stats={stats} note={precautions?.note ?? null} lastVisitAt={lastVisitAt} onPinClick={() => setTab('notes')} />
 
           <div className="flex gap-1 overflow-x-auto mb-4 border-b border-slate-200">
             <TabButton active={tab === 'overview'} onClick={() => setTab('overview')} icon={<Hash size={15} />} label="ภาพรวม" />
             <TabButton active={tab === 'purchases'} onClick={() => setTab('purchases')} icon={<ShoppingCart size={15} />} label="การซื้อ" />
+            <TabButton active={tab === 'visits'} onClick={() => setTab('visits')} icon={<Footprints size={15} />} label="การเข้าพบ" />
             <TabButton active={tab === 'chat'} onClick={() => setTab('chat')} icon={<MessageCircle size={15} />} label="แชท" disabled />
             <TabButton active={tab === 'payments'} onClick={() => setTab('payments')} icon={<Wallet size={15} />} label="การชำระเงิน" disabled />
             <TabButton active={tab === 'notes'} onClick={() => setTab('notes')} icon={<StickyNote size={15} />} label="โน้ต" />
@@ -83,6 +97,7 @@ export default function CustomerDetail({ code, onBack }: { code: string; onBack:
 
           {tab === 'overview' && <Overview customer={customer} stats={stats} precautions={precautions} aiCard={aiCard} />}
           {tab === 'purchases' && <Purchases purchases={purchases} productCycles={productCycles} />}
+          {tab === 'visits' && <Visits visits={visits} onActionItemToggle={handleActionItemToggle} />}
           {tab === 'chat' && <ComingSoon label="ประวัติแชทจะเชื่อมกับคอนโซล Minerva" />}
           {tab === 'payments' && <ComingSoon label="รายการชำระเงินละเอียดจะดึงจาก Juno (สรุปแสดงในแท็บภาพรวมแล้ว)" />}
           {tab === 'notes' && <NoteEditor code={code} note={precautions?.note ?? null} onSaved={handleNoteSaved} />}
@@ -93,11 +108,12 @@ export default function CustomerDetail({ code, onBack }: { code: string; onBack:
 }
 
 function CustomerHeader({
-  customer: c, stats, note, onPinClick,
+  customer: c, stats, note, lastVisitAt, onPinClick,
 }: {
   customer: VenusCustomer;
   stats: CustomerStats | null;
   note: CustomerNote | null;
+  lastVisitAt: string | null;
   onPinClick: () => void;
 }) {
   return (
@@ -129,6 +145,11 @@ function CustomerHeader({
           {c.custType && <span className="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-600">{c.custType}</span>}
           {c.repCode && <span className="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-600">พนักงานขาย {c.repCode}</span>}
           {c.zone && <span className="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-600">เขต {c.zone}</span>}
+          {lastVisitAt && (
+            <span className="text-xs px-2 py-1 rounded-full bg-rose-50 text-rose-600 flex items-center gap-1">
+              <Footprints size={12} /> เข้าพบล่าสุด {formatDate(lastVisitAt)}
+            </span>
+          )}
           <CreditChip norm={c.creditTermsNorm} />
         </div>
       </div>
@@ -517,6 +538,135 @@ function Purchases({ purchases, productCycles }: { purchases: Purchase[]; produc
         )}
       </div>
     </div>
+  );
+}
+
+// Visit-report timeline (การเข้าพบ) — newest first (the API already sorts by visitAt desc).
+// Each card surfaces the Fable extraction (VenusVisit.extractJson) as compact chip-sections,
+// shown only when non-empty, plus that visit's action items with an optimistic ✓ toggle.
+function Visits({
+  visits, onActionItemToggle,
+}: {
+  visits: VenusVisit[];
+  onActionItemToggle: (itemId: string, done: boolean) => void;
+}) {
+  if (visits.length === 0) {
+    return (
+      <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-8 text-center text-slate-400">
+        <div className="text-sm font-semibold mb-1">ยังไม่มีบันทึกการเข้าพบ</div>
+        <div className="text-xs">รายงานจากทีมขายในไลน์กลุ่มจะขึ้นที่นี่เมื่อจับคู่กับลูกค้ารายนี้</div>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {visits.map((visit) => (
+        <VisitCard key={visit.id} visit={visit} onActionItemToggle={onActionItemToggle} />
+      ))}
+    </div>
+  );
+}
+
+function VisitCard({
+  visit, onActionItemToggle,
+}: {
+  visit: VenusVisit;
+  onActionItemToggle: (itemId: string, done: boolean) => void;
+}) {
+  const ex = visit.extractJson;
+  type ChipTone = 'rose' | 'ok' | 'warn' | 'slate';
+  const allSections: { label: string; items: string[]; tone: ChipTone }[] = [
+    { label: 'สั่งซื้อ', items: ex.orderedLines, tone: 'ok' },
+    { label: 'เสนอ', items: ex.proposed, tone: 'slate' },
+    { label: 'ไม่ซื้อเพราะ', items: ex.objections, tone: 'warn' },
+    { label: 'สต็อก', items: ex.stockNotes, tone: 'rose' },
+  ];
+  const chipSections = allSections.filter((s) => s.items.length > 0);
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-5">
+      <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
+        <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+          <Footprints size={15} className="text-rose-500" /> {formatDate(visit.visitAt)}
+        </div>
+        <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">{visit.repName}</span>
+      </div>
+      {visit.summary && <p className="text-sm text-slate-700 leading-relaxed mb-3">{visit.summary}</p>}
+
+      {chipSections.length > 0 && (
+        <div className="space-y-2 mb-3">
+          {chipSections.map((section) => (
+            <div key={section.label} className="flex items-start gap-2 text-xs">
+              <span className="shrink-0 text-slate-400 font-medium w-20">{section.label}</span>
+              <div className="flex flex-wrap gap-1">
+                {section.items.map((item, i) => (
+                  <span key={i} className={`px-2 py-0.5 rounded-full ${chipTone(section.tone)}`}>{item}</span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {visit.actionItems.length > 0 && (
+        <div className="pt-3 border-t border-slate-100 space-y-1.5">
+          {visit.actionItems.map((item) => (
+            <ActionItemRow key={item.id} item={item} onToggle={onActionItemToggle} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function chipTone(tone: 'rose' | 'ok' | 'warn' | 'slate'): string {
+  switch (tone) {
+    case 'rose': return 'bg-rose-100 text-rose-700';
+    case 'ok': return 'bg-emerald-100 text-emerald-700';
+    case 'warn': return 'bg-amber-100 text-amber-700';
+    default: return 'bg-slate-100 text-slate-600';
+  }
+}
+
+function ActionItemRow({
+  item, onToggle,
+}: {
+  item: VenusVisit['actionItems'][number];
+  onToggle: (itemId: string, done: boolean) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  async function handleClick() {
+    const next = !item.done;
+    onToggle(item.id, next); // optimistic
+    setBusy(true);
+    try {
+      await postActionItemDone(item.id, next);
+    } catch {
+      onToggle(item.id, !next); // revert on failure
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={busy}
+      className={`w-full flex items-start gap-2 text-left text-sm px-2 py-1.5 rounded-lg hover:bg-slate-50 disabled:opacity-60 ${
+        item.done ? 'text-slate-400' : 'text-slate-700'
+      }`}
+    >
+      {item.done ? (
+        <CheckSquare size={15} className="text-emerald-500 shrink-0 mt-0.5" />
+      ) : (
+        <Square size={15} className="text-slate-300 shrink-0 mt-0.5" />
+      )}
+      <span className={`flex-1 ${item.done ? 'line-through' : ''}`}>{item.text}</span>
+      {item.needsOwner && !item.done && (
+        <Flag size={13} className="text-amber-500 shrink-0 mt-0.5" />
+      )}
+    </button>
   );
 }
 

@@ -1,8 +1,12 @@
-import { useEffect, useState } from 'react';
-import { Loader2, AlertTriangle, CalendarRange, TrendingUp, TrendingDown, PackageSearch, ShieldAlert, RefreshCw, Sparkles } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  getDashboard, recompute, generateCards, segmentColor, formatBaht, formatDate, trendArrow, trendColor, SEGMENTS,
-  type DashboardResult,
+  Loader2, AlertTriangle, CalendarRange, TrendingUp, TrendingDown, PackageSearch, ShieldAlert, RefreshCw, Sparkles,
+  ClipboardList, Flag, Square, Footprints, Search, Link2,
+} from 'lucide-react';
+import {
+  getDashboard, recompute, generateCards, getActionItems, getVisits, linkVisit, getCustomers, postActionItemDone,
+  segmentColor, formatBaht, formatDate, trendArrow, trendColor, SEGMENTS,
+  type DashboardResult, type VenusActionItem, type VenusVisit, type VenusCustomerListRow,
 } from './lib/api';
 
 // Management lens (VENUS_BRIEF.md §8): segment distribution, at-risk list ranked by M
@@ -16,6 +20,14 @@ export default function Dashboard({ onOpen, canManage }: { onOpen: (code: string
   const [recomputing, setRecomputing] = useState(false);
   const [recomputeErr, setRecomputeErr] = useState('');
 
+  // การเข้าพบ (VENUS_VISITS_PLAN.md Phase 2): the suite-wide open follow-up queue and the
+  // awaiting_match unmatched-visit queue. Independent loads/failures from the RFM dashboard
+  // above — a visits-API hiccup must not blow up the rest of the page.
+  const [followUps, setFollowUps] = useState<VenusActionItem[]>([]);
+  const [followUpsErr, setFollowUpsErr] = useState('');
+  const [unmatched, setUnmatched] = useState<VenusVisit[]>([]);
+  const [unmatchedErr, setUnmatchedErr] = useState('');
+
   function load() {
     setBusy(true);
     setErr('');
@@ -24,7 +36,29 @@ export default function Dashboard({ onOpen, canManage }: { onOpen: (code: string
       .catch(() => setErr('โหลดแดชบอร์ดไม่สำเร็จ'))
       .finally(() => setBusy(false));
   }
-  useEffect(() => { load(); }, []);
+  function loadFollowUps() {
+    setFollowUpsErr('');
+    getActionItems({ open: 1 }).then(setFollowUps).catch(() => setFollowUpsErr('โหลดรายการติดตามไม่สำเร็จ'));
+  }
+  function loadUnmatched() {
+    setUnmatchedErr('');
+    getVisits({ status: 'awaiting_match' }).then(setUnmatched).catch(() => setUnmatchedErr('โหลดรายการที่ยังไม่จับคู่ไม่สำเร็จ'));
+  }
+  useEffect(() => { load(); loadFollowUps(); loadUnmatched(); }, []);
+
+  // This view is scoped to open=1, so ticking an item off just drops it from the list
+  // (optimistic); a failed API call re-inserts it at the front so nothing silently vanishes.
+  function handleActionItemDone(item: VenusActionItem) {
+    setFollowUps((prev) => prev.filter((i) => i.id !== item.id));
+  }
+  function handleActionItemRevert(item: VenusActionItem) {
+    setFollowUps((prev) => [item, ...prev]);
+  }
+
+  async function handleVisitLinked(visitId: string) {
+    setUnmatched((prev) => prev.filter((v) => v.id !== visitId));
+    loadFollowUps(); // a newly linked visit's action items may now show a customer
+  }
 
   async function onRecompute() {
     setRecomputing(true);
@@ -122,6 +156,44 @@ export default function Dashboard({ onOpen, canManage }: { onOpen: (code: string
       )}
       {genMsg && <div className="text-xs -mt-2 px-1 text-slate-600">{genMsg}</div>}
 
+      {/* รายการติดตาม — open action items from visit reports (VENUS_VISITS_PLAN.md Phase 2),
+          needsOwner first (server-sorted) with an amber flag marker. */}
+      <section className="bg-white rounded-2xl border border-slate-200 p-5">
+        <h3 className="text-sm font-semibold text-slate-500 mb-1 flex items-center gap-1.5">
+          <ClipboardList size={15} className="text-rose-500" /> รายการติดตาม
+        </h3>
+        <p className="text-xs text-slate-400 mb-3">รายการที่ทีมขายบันทึกไว้จากการเข้าพบลูกค้า ยังไม่ปิด</p>
+        {followUpsErr ? (
+          <div className="flex items-center gap-1 text-rose-600 text-xs py-2"><AlertTriangle size={12} /> {followUpsErr}</div>
+        ) : followUps.length === 0 ? (
+          <div className="text-sm text-slate-300 py-4 text-center">ไม่มีรายการติดตามค้าง</div>
+        ) : (
+          <div className="space-y-1">
+            {followUps.map((item) => (
+              <FollowUpRow key={item.id} item={item} onDone={handleActionItemDone} onRevert={handleActionItemRevert} />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* ยังไม่จับคู่ลูกค้า — awaiting_match visits; rendered ONLY when at least one exists. */}
+      {unmatched.length > 0 && (
+        <section className="bg-white rounded-2xl border border-slate-200 p-5">
+          <h3 className="text-sm font-semibold text-slate-500 mb-1 flex items-center gap-1.5">
+            <Footprints size={15} className="text-amber-500" /> ยังไม่จับคู่ลูกค้า
+          </h3>
+          <p className="text-xs text-slate-400 mb-3">รายงานเข้าพบที่ระบบยังจับคู่ลูกค้าไม่ได้ — เลือกลูกค้าที่ถูกต้อง</p>
+          {unmatchedErr && (
+            <div className="flex items-center gap-1 text-rose-600 text-xs py-2"><AlertTriangle size={12} /> {unmatchedErr}</div>
+          )}
+          <div className="space-y-2">
+            {unmatched.map((visit) => (
+              <UnmatchedVisitRow key={visit.id} visit={visit} onLinked={handleVisitLinked} />
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Segment distribution */}
       <section className="bg-white rounded-2xl border border-slate-200 p-5">
         <h3 className="text-sm font-semibold text-slate-500 mb-3">การแบ่งกลุ่มลูกค้า (RFM)</h3>
@@ -215,6 +287,138 @@ export default function Dashboard({ onOpen, canManage }: { onOpen: (code: string
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function FollowUpRow({
+  item, onDone, onRevert,
+}: {
+  item: VenusActionItem;
+  onDone: (item: VenusActionItem) => void;
+  onRevert: (item: VenusActionItem) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  async function handleClick() {
+    setBusy(true);
+    onDone(item); // optimistic — this view is open=1, so a done item just drops out
+    try {
+      await postActionItemDone(item.id, true);
+    } catch {
+      onRevert(item);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={busy}
+      className="w-full flex items-start gap-2 text-left text-sm px-2 py-2 rounded-xl hover:bg-slate-50 disabled:opacity-60"
+    >
+      <Square size={15} className="text-slate-300 shrink-0 mt-0.5" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start gap-1.5">
+          {item.needsOwner && <Flag size={13} className="text-amber-500 shrink-0 mt-0.5" />}
+          <span className="text-slate-700">{item.text}</span>
+        </div>
+        <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
+          {item.customerCode ? <span className="font-mono">{item.customerCode}</span> : <span>ยังไม่จับคู่ลูกค้า</span>}
+          {item.visit?.repName && <span>· {item.visit.repName}</span>}
+          {item.visit?.visitAt && <span>· {formatDate(item.visit.visitAt)}</span>}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function UnmatchedVisitRow({ visit, onLinked }: { visit: VenusVisit; onLinked: (visitId: string) => void }) {
+  const [linking, setLinking] = useState(false);
+  const [err, setErr] = useState('');
+
+  async function handlePick(code: string) {
+    setLinking(true);
+    setErr('');
+    try {
+      await linkVisit(visit.id, code);
+      onLinked(visit.id);
+    } catch {
+      setErr('จับคู่ไม่สำเร็จ');
+    } finally {
+      setLinking(false);
+    }
+  }
+
+  return (
+    <div className="border border-slate-100 rounded-xl p-3">
+      <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
+        <div className="text-sm font-medium text-slate-800">
+          {visit.extractJson.customerNameGuess || <span className="text-slate-400">(ไม่ทราบชื่อลูกค้า)</span>}
+        </div>
+        <span className="text-xs text-slate-400 shrink-0">{formatDate(visit.visitAt)} · {visit.repName}</span>
+      </div>
+      {visit.summary && <p className="text-xs text-slate-600 mb-2">{visit.summary}</p>}
+      <CustomerPicker onPick={handlePick} busy={linking} />
+      {err && <div className="flex items-center gap-1 text-rose-600 text-xs mt-1"><AlertTriangle size={11} /> {err}</div>}
+    </div>
+  );
+}
+
+// Small debounced customer picker — same search-as-you-type pattern as CustomerList.tsx,
+// scoped down to an inline result list for choosing a match rather than navigating.
+function CustomerPicker({ onPick, busy }: { onPick: (code: string) => void; busy: boolean }) {
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState<VenusCustomerListRow[]>([]);
+  const [searching, setSearching] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!q.trim()) {
+      setResults([]);
+      return;
+    }
+    setSearching(true);
+    debounceRef.current = setTimeout(() => {
+      getCustomers({ q, limit: 6 })
+        .then((r) => setResults(r.customers))
+        .catch(() => setResults([]))
+        .finally(() => setSearching(false));
+    }, 250);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [q]);
+
+  return (
+    <div>
+      <div className="relative">
+        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          disabled={busy}
+          placeholder="ค้นหาลูกค้าเพื่อจับคู่…"
+          className="w-full pl-7 pr-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs focus:outline-none focus:ring-2 focus:ring-rose-200 disabled:opacity-60"
+        />
+      </div>
+      {searching && <div className="text-xs text-slate-300 mt-1">กำลังค้นหา…</div>}
+      {results.length > 0 && (
+        <div className="mt-1.5 space-y-1">
+          {results.map((c) => (
+            <button
+              key={c.code}
+              onClick={() => onPick(c.code)}
+              disabled={busy}
+              className="w-full flex items-center gap-2 text-left text-xs px-2 py-1.5 rounded-lg border border-slate-100 hover:border-rose-300 hover:bg-rose-50/40 disabled:opacity-60"
+            >
+              <Link2 size={12} className="text-rose-400 shrink-0" />
+              <span className="min-w-0 flex-1 truncate text-slate-700">{c.name || '(ไม่มีชื่อ)'}</span>
+              <span className="text-slate-400 font-mono shrink-0">{c.code}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

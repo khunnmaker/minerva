@@ -153,6 +153,84 @@ export interface CustomerDetailResult {
   aiCard: AiCard | null;
 }
 
+// ── Visit reports (VENUS_VISITS_PLAN.md Phase 1/2) ─────────────────────────
+// Mirrors the Fable extraction contract (api/src/venus/visits.ts extractionSchema)
+// field-for-field — this is what's stored in VenusVisit.extractJson.
+export interface VisitActionItemExtract {
+  text: string;
+  needsOwner: boolean;
+}
+export interface VisitExtraction {
+  isVisitReport: boolean;
+  customerNameGuess: string;
+  visitDate?: string;
+  summary: string;
+  proposed: string[];
+  orderedLines: string[];
+  objections: string[];
+  stockNotes: string[];
+  actionItems: VisitActionItemExtract[];
+}
+
+// Mirrors VenusActionItem (api/prisma/schema.prisma) field-for-field.
+export interface VenusActionItem {
+  id: string;
+  visitId: string;
+  customerCode: string | null;
+  text: string;
+  needsOwner: boolean;
+  done: boolean;
+  doneBy: string | null;
+  doneAt: string | null;
+  createdAt: string;
+  // Present only on GET /api/venus/action-items (joined visit sliver).
+  visit?: { visitAt: string; repName: string; summary: string };
+}
+
+// Mirrors VenusVisit (api/prisma/schema.prisma) field-for-field.
+export interface VenusVisit {
+  id: string;
+  groupId: string;
+  repName: string;
+  repAgentId: string | null;
+  customerCode: string | null;
+  status: 'matched' | 'awaiting_match' | 'skipped';
+  visitAt: string;
+  summary: string;
+  extractJson: VisitExtraction;
+  model: string;
+  createdAt: string;
+  actionItems: VenusActionItem[];
+}
+
+export const getVisits = (params: { customerCode?: string; status?: VenusVisit['status']; recent?: 0 | 1 } = {}) => {
+  const p = new URLSearchParams();
+  if (params.customerCode) p.set('customerCode', params.customerCode);
+  if (params.status) p.set('status', params.status);
+  if (params.recent) p.set('recent', String(params.recent));
+  const qs = p.toString();
+  return authed<VenusVisit[]>(`/api/venus/visits${qs ? `?${qs}` : ''}`);
+};
+
+export const linkVisit = (id: string, customerCode: string) =>
+  authed<{ ok: boolean }>(`/api/venus/visits/${encodeURIComponent(id)}/link`, {
+    method: 'POST',
+    body: JSON.stringify({ customerCode }),
+  });
+
+export const getActionItems = (params: { open?: 0 | 1 } = {}) => {
+  const p = new URLSearchParams();
+  if (params.open) p.set('open', String(params.open));
+  const qs = p.toString();
+  return authed<VenusActionItem[]>(`/api/venus/action-items${qs ? `?${qs}` : ''}`);
+};
+
+export const postActionItemDone = (id: string, done?: boolean) =>
+  authed<{ ok: boolean; done: boolean }>(`/api/venus/action-items/${encodeURIComponent(id)}/done`, {
+    method: 'POST',
+    body: JSON.stringify(done == null ? {} : { done }),
+  });
+
 // ── Management-lens dashboard ──────────────────────────────────────────────
 
 export interface DashboardAtRiskRow {

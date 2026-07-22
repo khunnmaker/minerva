@@ -7,6 +7,10 @@ import {
   getFlagCounts,
   listStaffRequests,
   baht,
+  CERES_PURGE_CONFIRM_PHRASE,
+  describePurgeError,
+  purgeExpenseEntry,
+  purgeStaffRequest,
   type Expense,
   type ExpenseStatus,
   type StaffRequest,
@@ -116,9 +120,23 @@ type MergedItem =
   | { kind: 'expense'; date: string; key: string; data: Expense }
   | { kind: 'request'; date: string; key: string; data: StaffRequest };
 
+// Shared confirmation UX for every ลบถาวร (ทดสอบ) button — window.prompt asking the user
+// to type the exact Thai confirm phrase; wrong/cancelled input aborts without calling the
+// server at all (the typed value IS the request's confirm body field, so a mistyped phrase
+// simply 400s if it somehow slips through — but we abort client-side first to save the
+// round-trip and give an immediate "you typed it wrong" signal).
+function promptPurgeConfirm(label: string): string | null {
+  const typed = window.prompt(
+    `ลบถาวร (ทดสอบ) — ${label}\nพิมพ์ "${CERES_PURGE_CONFIRM_PHRASE}" เพื่อยืนยัน (ลบแบบถาวร กู้คืนไม่ได้ ไม่มีประวัติ)`,
+  );
+  if (typed == null) return null;
+  return typed.trim() === CERES_PURGE_CONFIRM_PHRASE ? typed.trim() : '';
+}
+
 export default function MdHistory() {
   const { bootstrap } = useCeres();
   const isCeo = bootstrap.role === 'ceo';
+  const purgeEnabled = isCeo && bootstrap.alphaPurgeEnabled;
   const [status, setStatus] = useState<ExpenseStatus | ''>('');
   const [partyId, setPartyId] = useState('');
   const [from, setFrom] = useState('');
@@ -202,6 +220,40 @@ export default function MdHistory() {
     }
   }
 
+  // Alpha hard-purge (CEO only): removes the row and its whole graph — no soft-delete, no
+  // audit trail. Any status (pending/approved/settled/rejected/void).
+  async function onPurgeExpense(r: Expense) {
+    const confirmed = promptPurgeConfirm(`${r.partyName} · ${baht(r.amountNum)}`);
+    if (confirmed == null) return;
+    if (!confirmed) { window.alert('พิมพ์ข้อความยืนยันไม่ตรง — ลบไม่สำเร็จ'); return; }
+    setBusyId(r.id);
+    try {
+      await purgeExpenseEntry(r.id);
+      setExpenses((rs) => rs.filter((x) => x.id !== r.id));
+      load();
+    } catch (err) {
+      window.alert(describePurgeError(err));
+    } finally {
+      setBusyId('');
+    }
+  }
+
+  async function onPurgeRequest(r: StaffRequest) {
+    const confirmed = promptPurgeConfirm(`${r.requestedByName} · ${baht(r.amountNum)}`);
+    if (confirmed == null) return;
+    if (!confirmed) { window.alert('พิมพ์ข้อความยืนยันไม่ตรง — ลบไม่สำเร็จ'); return; }
+    setBusyId(r.id);
+    try {
+      await purgeStaffRequest(r.id);
+      setRequests((rs) => rs.filter((x) => x.id !== r.id));
+      load();
+    } catch (err) {
+      window.alert(describePurgeError(err));
+    } finally {
+      setBusyId('');
+    }
+  }
+
   const rows: MergedItem[] = useMemo(() => {
     const filteredRequests = requests.filter((r) => {
       if (!requestMatchesStatusFilter(r, status)) return false;
@@ -267,12 +319,22 @@ export default function MdHistory() {
                 busy={busyId === row.data.id}
                 flagCount={flagCounts[row.key]}
                 isCeo={isCeo}
+                purgeEnabled={purgeEnabled}
                 onFlagged={load}
                 onDelete={onDelete}
                 onVoid={onVoid}
+                onPurge={onPurgeExpense}
               />
             ) : (
-              <RequestHistoryCard key={row.key} request={row.data} flagCount={flagCounts[row.key]} onFlagged={load} />
+              <RequestHistoryCard
+                key={row.key}
+                request={row.data}
+                busy={busyId === row.data.id}
+                flagCount={flagCounts[row.key]}
+                purgeEnabled={purgeEnabled}
+                onFlagged={load}
+                onPurge={onPurgeRequest}
+              />
             ),
           )}
         </div>
@@ -286,17 +348,21 @@ function ExpenseHistoryCard({
   busy,
   flagCount,
   isCeo,
+  purgeEnabled,
   onFlagged,
   onDelete,
   onVoid,
+  onPurge,
 }: {
   e: Expense;
   busy: boolean;
   flagCount?: number;
   isCeo: boolean;
+  purgeEnabled: boolean;
   onFlagged: () => void;
   onDelete: (r: Expense) => void;
   onVoid: (r: Expense) => void;
+  onPurge: (r: Expense) => void;
 }) {
   const voided = r.status === 'void';
   return (
@@ -338,29 +404,38 @@ function ExpenseHistoryCard({
           )}
 
           {/* ติดธง — anyone; Delete (pending drafts) stays gm/ceo; ยกเลิก (void) is CEO-ONLY —
-              unchanged from MdExpenses.tsx's own convention (owner directive 2026-07-21). */}
-          {!voided && (
-            <div className="flex justify-end items-center gap-3 mt-2">
-              <FlagButton targetType="expense" targetId={r.id} onFlagged={onFlagged} />
-              {r.status === 'pending' ? (
-                <button
-                  onClick={() => onDelete(r)}
-                  disabled={busy}
-                  className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 disabled:opacity-50"
-                >
-                  {busy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} ลบ
-                </button>
-              ) : isCeo ? (
-                <button
-                  onClick={() => onVoid(r)}
-                  disabled={busy}
-                  className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-                >
-                  {busy ? <Loader2 size={13} className="animate-spin" /> : <Ban size={13} />} ยกเลิก
-                </button>
-              ) : null}
-            </div>
-          )}
+              unchanged from MdExpenses.tsx's own convention (owner directive 2026-07-21).
+              ลบถาวร (ทดสอบ) — CEO-only alpha hard-purge, ANY status incl. already-voided
+              (owner directive, 2026-07-22), only rendered when the alpha flag is on. */}
+          <div className="flex justify-end items-center gap-3 mt-2">
+            {!voided && <FlagButton targetType="expense" targetId={r.id} onFlagged={onFlagged} />}
+            {!voided && (r.status === 'pending' ? (
+              <button
+                onClick={() => onDelete(r)}
+                disabled={busy}
+                className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+              >
+                {busy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} ลบ
+              </button>
+            ) : isCeo ? (
+              <button
+                onClick={() => onVoid(r)}
+                disabled={busy}
+                className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {busy ? <Loader2 size={13} className="animate-spin" /> : <Ban size={13} />} ยกเลิก
+              </button>
+            ) : null)}
+            {purgeEnabled && (
+              <button
+                onClick={() => onPurge(r)}
+                disabled={busy}
+                className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-rose-300 text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+              >
+                {busy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} ลบถาวร (ทดสอบ)
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -369,15 +444,22 @@ function ExpenseHistoryCard({
 
 // Finished v2 request row — READ-ONLY besides ติดธง (owner spec: history is display + flag
 // only; any actual mutation on a request — void, refund, etc — stays in RequestDetail/the
-// approval+fulfillment queues where it already lives, not duplicated here).
+// approval+fulfillment queues where it already lives, not duplicated here). ลบถาวร (ทดสอบ)
+// is the one exception — CEO-only alpha hard-purge, ANY status (owner directive, 2026-07-22).
 function RequestHistoryCard({
   request: r,
+  busy,
   flagCount,
+  purgeEnabled,
   onFlagged,
+  onPurge,
 }: {
   request: StaffRequest;
+  busy: boolean;
   flagCount?: number;
+  purgeEnabled: boolean;
   onFlagged: () => void;
+  onPurge: (r: StaffRequest) => void;
 }) {
   const voided = r.approvalStatus === 'void';
   const chip = requestStatusChip(r);
@@ -407,8 +489,17 @@ function RequestHistoryCard({
             <div className="text-xs text-slate-500 mt-1">ยกเลิกเพราะ: {r.voidReason}</div>
           )}
 
-          <div className="flex justify-end mt-2">
+          <div className="flex justify-end items-center gap-3 mt-2">
             <FlagButton targetType="request" targetId={r.id} onFlagged={onFlagged} />
+            {purgeEnabled && (
+              <button
+                onClick={() => onPurge(r)}
+                disabled={busy}
+                className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-rose-300 text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+              >
+                {busy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} ลบถาวร (ทดสอบ)
+              </button>
+            )}
           </div>
         </div>
       </div>

@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, AlertTriangle, PiggyBank, CheckCircle2 } from 'lucide-react';
-import { createMovement, listMovements, baht, type Movement } from './lib/api';
+import { Loader2, AlertTriangle, PiggyBank, CheckCircle2, Trash2 } from 'lucide-react';
+import {
+  createMovement,
+  listMovements,
+  baht,
+  CERES_PURGE_CONFIRM_PHRASE,
+  describePurgeError,
+  purgeCashMovement,
+  type Movement,
+} from './lib/api';
+import { useCeres } from './lib/bootstrapContext';
 
 const AMOUNT_RE = /^\d+(\.\d{1,2})?$/;
 
@@ -18,9 +27,12 @@ const TYPE_META: Record<string, { label: string; cls: string }> = {
 };
 
 export default function MdMoney() {
+  const { bootstrap } = useCeres();
+  const purgeEnabled = bootstrap.role === 'ceo' && bootstrap.alphaPurgeEnabled;
   const [movements, setMovements] = useState<Movement[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [busyId, setBusyId] = useState('');
 
   const load = useCallback(() => {
     setLoading(true);
@@ -36,6 +48,26 @@ export default function MdMoney() {
   }, [load, refreshKey]);
 
   const bump = () => setRefreshKey((k) => k + 1);
+
+  // Alpha hard-purge (CEO only, owner directive 2026-07-22) — a bare deposit row only (never
+  // created by a request money event, so it's always safely hard-deletable on its own; see
+  // api/src/ceres/purge.ts's purgeCashMovement — the button is only ever shown on 'deposit'
+  // rows in the first place, see the render below).
+  async function onPurgeMovement(m: Movement) {
+    const typed = window.prompt(`ลบถาวร (ทดสอบ) — ${baht(Number(m.amount))}\nพิมพ์ "${CERES_PURGE_CONFIRM_PHRASE}" เพื่อยืนยัน (ลบแบบถาวร กู้คืนไม่ได้ ไม่มีประวัติ)`);
+    if (typed == null) return;
+    if (typed.trim() !== CERES_PURGE_CONFIRM_PHRASE) { window.alert('พิมพ์ข้อความยืนยันไม่ตรง — ลบไม่สำเร็จ'); return; }
+    setBusyId(m.id);
+    try {
+      await purgeCashMovement(m.id);
+      setMovements((rs) => rs.filter((x) => x.id !== m.id));
+      load();
+    } catch (err) {
+      window.alert(describePurgeError(err));
+    } finally {
+      setBusyId('');
+    }
+  }
 
   return (
     <div>
@@ -70,6 +102,16 @@ export default function MdMoney() {
                     <span className="text-xs text-slate-400">
                       {new Date(m.createdAt).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}
                     </span>
+                    {purgeEnabled && m.type === 'deposit' && (
+                      <button
+                        onClick={() => onPurgeMovement(m)}
+                        disabled={busyId === m.id}
+                        className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-lg border border-rose-300 text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+                        title="ลบถาวร (ทดสอบ)"
+                      >
+                        {busyId === m.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}

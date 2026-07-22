@@ -187,6 +187,9 @@ export interface Bootstrap {
   entities: string[]; // ['PROM','DENL']
   floor: number;
   ceoThreshold: number;
+  // Alpha-only CEO hard-purge kill-switch (2026-07-22) — the ลบถาวร buttons only ever
+  // render when this is true, even for the CEO. See api/src/ceres/purge.ts.
+  alphaPurgeEnabled: boolean;
 }
 export const getBootstrap = () => authed<Bootstrap>('/api/ceres/bootstrap');
 
@@ -1142,6 +1145,47 @@ export function describeFlagError(err: unknown): string {
     return FLAG_ERROR_TH[String((err.body as { error: unknown }).error)] ?? 'ติดธงไม่สำเร็จ ลองใหม่อีกครั้ง';
   }
   return 'ติดธงไม่สำเร็จ ลองใหม่อีกครั้ง';
+}
+
+// ---------------------------------------------------------------------------
+// Alpha hard-purge (owner directive, 2026-07-22) — CEO-only, env-gated (bootstrap's
+// alphaPurgeEnabled) HARD delete of a single request/expense/cash-movement and its whole
+// dependent graph. See api/src/ceres/purge.ts. Unlike void (soft — the row stays, struck-
+// through, forever auditable), purge REMOVES the row — "like it never happened", no audit
+// row. `confirm` must equal the exact Thai phrase below or the server 400s confirm_mismatch.
+// ---------------------------------------------------------------------------
+
+export const CERES_PURGE_CONFIRM_PHRASE = 'ลบถาวร';
+
+export const purgeStaffRequest = (id: string) =>
+  authed<{ ok: true; requestId: string; purgedChildExpenseIds: string[] }>(`/api/ceres/requests/${id}/purge`, {
+    method: 'POST',
+    body: JSON.stringify({ confirm: CERES_PURGE_CONFIRM_PHRASE }),
+  });
+
+export const purgeExpenseEntry = (id: string) =>
+  authed<{ ok: true; expenseId: string }>(`/api/ceres/expenses/${id}/purge`, {
+    method: 'POST',
+    body: JSON.stringify({ confirm: CERES_PURGE_CONFIRM_PHRASE }),
+  });
+
+export const purgeCashMovement = (id: string) =>
+  authed<{ ok: true; movementId: string }>(`/api/ceres/cash/${id}/purge`, {
+    method: 'POST',
+    body: JSON.stringify({ confirm: CERES_PURGE_CONFIRM_PHRASE }),
+  });
+
+const PURGE_ERROR_TH: Record<string, string> = {
+  not_found: 'ไม่พบรายการ',
+  confirm_mismatch: 'พิมพ์ข้อความยืนยันไม่ตรง — ลบไม่สำเร็จ',
+  purge_disabled: 'ปิดใช้งานการลบถาวรแล้ว',
+  purge_via_request: 'รายการนี้เกิดจากคำขอ — ต้องลบถาวรที่คำขอแทน',
+};
+export function describePurgeError(err: unknown): string {
+  if (err instanceof ApiError && err.body && typeof err.body === 'object' && 'error' in err.body) {
+    return PURGE_ERROR_TH[String((err.body as { error: unknown }).error)] ?? 'ลบถาวรไม่สำเร็จ ลองใหม่อีกครั้ง';
+  }
+  return 'ลบถาวรไม่สำเร็จ ลองใหม่อีกครั้ง';
 }
 
 // ---------------------------------------------------------------------------

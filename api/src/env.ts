@@ -76,6 +76,12 @@ const schema = z.object({
   CERES_CEO_THRESHOLD: z.coerce.number().default(5000),
   // Hour (0-23, Thai local time) the nightly CEO digest fires — see ceres/nightlyDigest.ts.
   CERES_DIGEST_HOUR: z.coerce.number().int().min(0).max(23).default(21),
+  // Alpha-only CEO hard-purge kill-switch (owner directive, 2026-07-22): '1'/'true' = purge
+  // endpoints live and the UI shows ลบถาวร buttons; '0'/anything else = every purge endpoint
+  // 403s {error:'purge_disabled'} and the UI hides the buttons. Default ENABLED for the alpha
+  // period — set to '0' before a production launch (see docs/CERES_ALPHA_PURGE.md and
+  // ceres/purge.ts's alphaPurgeEnabled()).
+  CERES_ALPHA_PURGE: z.string().default('1'),
 
   // Suite-wide: the CEO's LINE userId for push alerts (Ceres escalations today; any
   // deity may reuse it).

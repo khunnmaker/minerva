@@ -26,6 +26,7 @@ import {
 } from '../../ceres/requestService.js';
 import { decideAndPayStaffRequest } from '../../ceres/requestDecideAndPay.js';
 import { RequestVoidError, voidStaffRequest } from '../../ceres/requestVoid.js';
+import { alphaPurgeEnabled, assertPurgeConfirm, CeresPurgeError, purgeErrorStatus, purgeStaffRequest } from '../../ceres/purge.js';
 import { notifyCeoEscalation } from '../../ceres/notifyCeo.js';
 import { notifyRequesterForEvent, notifyRequesterForMoneyEvent } from '../../ceres/notifyRequester.js';
 import { isValidAmount, parseRequestCategoryGroups, thaiDayKey, toStaffRequestRow, toMoneyEventRow } from './common.js';
@@ -615,6 +616,34 @@ export function requestsRoutes(app: FastifyInstance) {
         return { request: toStaffRequestRow(request, review, requestPhotoUploadIds) };
       } catch (err) {
         return voidError(reply, err);
+      }
+    },
+  );
+
+  // POST /api/ceres/requests/:id/purge { confirm } — CEO-ONLY alpha hard-delete, ANY
+  // approvalStatus/fulfillmentStatus (owner directive, 2026-07-22: "cleanse each entry
+  // like it hasn't happened before"). Unlike /void (soft — the row stays, struck-through,
+  // forever auditable), this REMOVES the request and its ENTIRE dependent graph in one
+  // transaction — request events, money events, the CashMovement rows those money events
+  // created (restores the box balance), AI reviews, flags, revisions, and media links.
+  // Advance liquidation children (CeresExpense.advanceRequestId = this id) are purged too,
+  // full graph each, in the SAME transaction. No audit row is written — see ceres/purge.ts.
+  app.post<{ Params: { id: string } }>(
+    '/api/ceres/requests/:id/purge',
+    { preHandler: requireCeresRole('ceo') },
+    async (req, reply) => {
+      if (!alphaPurgeEnabled()) return reply.code(403).send({ error: 'purge_disabled' });
+      const body = z.object({ confirm: z.string() }).safeParse(req.body);
+      if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
+      try {
+        assertPurgeConfirm(body.data.confirm);
+        const result = await purgeStaffRequest(req.params.id, req.agent!);
+        return { ok: true, ...result };
+      } catch (err) {
+        if (err instanceof CeresPurgeError) {
+          return reply.code(purgeErrorStatus(err.code)).send({ error: err.code });
+        }
+        throw err;
       }
     },
   );

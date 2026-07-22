@@ -7,18 +7,22 @@ import {
   Landmark,
   Loader2,
   Plus,
+  Trash2,
   Undo2,
   X,
 } from 'lucide-react';
 import {
   baht,
   describeMoneyError,
+  describePurgeError,
   describeVoidError,
   getRequestLiquidation,
   getStaffRequest,
   newIdempotencyKey,
+  purgeStaffRequest,
   reverseRequestMoneyEvent,
   voidStaffRequest,
+  CERES_PURGE_CONFIRM_PHRASE,
   type AdvanceLiquidation,
   type ApprovalStatus,
   type FulfillmentStatus,
@@ -102,6 +106,7 @@ export default function RequestDetail({
   const { agent, bootstrap } = useCeres();
   const isManager = bootstrap.role === 'gm' || bootstrap.role === 'ceo';
   const isCeo = bootstrap.role === 'ceo';
+  const purgeEnabled = isCeo && bootstrap.alphaPurgeEnabled;
 
   const [request, setRequest] = useState<StaffRequest | null>(null);
   const [events, setEvents] = useState<RequestEvent[]>([]);
@@ -109,6 +114,7 @@ export default function RequestDetail({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [voidBusy, setVoidBusy] = useState(false);
+  const [purgeBusy, setPurgeBusy] = useState(false);
 
   const [liquidation, setLiquidation] = useState<AdvanceLiquidation | null>(null);
   const [liquidationLoading, setLiquidationLoading] = useState(false);
@@ -188,6 +194,26 @@ export default function RequestDetail({
     }
   }
 
+  // Alpha hard-purge (CEO only, owner directive 2026-07-22) — removes the request and its
+  // whole graph, ANY state (in-flight test requests are purgeable too, unlike /void which
+  // still writes an audit trail). The request no longer exists after this succeeds, so we
+  // close the sheet and let the caller's list refresh itself instead of re-fetching it.
+  async function onPurgeRequest() {
+    const typed = window.prompt(`ลบถาวร (ทดสอบ) — คำขอนี้ทั้งหมด\nพิมพ์ "${CERES_PURGE_CONFIRM_PHRASE}" เพื่อยืนยัน (ลบแบบถาวร กู้คืนไม่ได้ ไม่มีประวัติ)`);
+    if (typed == null) return;
+    if (typed.trim() !== CERES_PURGE_CONFIRM_PHRASE) { window.alert('พิมพ์ข้อความยืนยันไม่ตรง — ลบไม่สำเร็จ'); return; }
+    setPurgeBusy(true);
+    try {
+      await purgeStaffRequest(requestId);
+      onChanged?.();
+      onClose();
+    } catch (err) {
+      window.alert(describePurgeError(err));
+    } finally {
+      setPurgeBusy(false);
+    }
+  }
+
   const canAddLiquidationExpense =
     !!request &&
     request.requestType === 'advance' &&
@@ -263,16 +289,29 @@ export default function RequestDetail({
               {/* ติดธง — everyone who can see this request (flag button never hides on
                   ownership, server enforces visibility). ยกเลิกรายการ — CEO only, any state
                   (owner directive, 2026-07-21). */}
-              {request.approvalStatus !== 'void' && (
+              {(request.approvalStatus !== 'void' || purgeEnabled) && (
                 <div className="flex items-center justify-end gap-3 mt-3 pt-3 border-t border-slate-100">
-                  <FlagButton targetType="request" targetId={request.id} onFlagged={() => notify('ติดธงแล้ว')} />
-                  {isCeo && (
+                  {request.approvalStatus !== 'void' && (
+                    <FlagButton targetType="request" targetId={request.id} onFlagged={() => notify('ติดธงแล้ว')} />
+                  )}
+                  {isCeo && request.approvalStatus !== 'void' && (
                     <button
                       onClick={onVoidRequest}
                       disabled={voidBusy}
                       className="inline-flex items-center gap-1 text-xs font-semibold text-rose-600 hover:text-rose-700 disabled:opacity-50"
                     >
                       {voidBusy ? <Loader2 size={13} className="animate-spin" /> : <Ban size={13} />} ยกเลิกรายการ
+                    </button>
+                  )}
+                  {/* ลบถาวร (ทดสอบ) — CEO-only alpha hard-purge, ANY state incl. already-voided
+                      (owner directive, 2026-07-22), only rendered when the alpha flag is on. */}
+                  {purgeEnabled && (
+                    <button
+                      onClick={onPurgeRequest}
+                      disabled={purgeBusy}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-rose-700 hover:text-rose-800 disabled:opacity-50"
+                    >
+                      {purgeBusy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} ลบถาวร (ทดสอบ)
                     </button>
                   )}
                 </div>

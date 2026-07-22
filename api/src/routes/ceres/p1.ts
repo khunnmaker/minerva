@@ -19,6 +19,7 @@ import { readReceiptImage } from '../../llm/readReceipt.js';
 import { reviewExpensePostHoc } from '../../ceres/aiReview.js';
 import { ceresReceiptUrl, isValidAmount, thaiDayKey, thaiDayRange, toExpenseRow, computeBoard } from './common.js';
 import { GROUP_COMPANY_CODES } from '../../jupiter/companies.js';
+import { alphaPurgeEnabled, assertPurgeConfirm, CeresPurgeError, purgeCashMovement, purgeErrorStatus, purgeExpense } from '../../ceres/purge.js';
 import {
   loadLinkMap,
   idsWithFallback,
@@ -71,6 +72,9 @@ export function p1Routes(app: FastifyInstance) {
       entities: ENTITIES,
       floor: env.CERES_FLOOR,
       ceoThreshold: env.CERES_CEO_THRESHOLD,
+      // Alpha-only CEO hard-purge kill-switch (2026-07-22) — the UI hides every ลบถาวร
+      // button when this is false, even for the CEO. See ceres/purge.ts.
+      alphaPurgeEnabled: alphaPurgeEnabled(),
     };
   });
 
@@ -568,6 +572,31 @@ export function p1Routes(app: FastifyInstance) {
     },
   );
 
+  // POST /api/ceres/expenses/:id/purge { confirm } — CEO-ONLY alpha hard-delete, ANY status
+  // (owner directive, 2026-07-22: "cleanse each entry like it hasn't happened before").
+  // Unlike /void (soft, keeps the row forever auditable), this REMOVES the row and its
+  // whole dependent graph — no audit trail by design. Env-gated by CERES_ALPHA_PURGE; see
+  // ceres/purge.ts and docs/CERES_ALPHA_PURGE.md.
+  app.post<{ Params: { id: string } }>(
+    '/api/ceres/expenses/:id/purge',
+    { preHandler: requireCeresRole('ceo') },
+    async (req, reply) => {
+      if (!alphaPurgeEnabled()) return reply.code(403).send({ error: 'purge_disabled' });
+      const body = z.object({ confirm: z.string() }).safeParse(req.body);
+      if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
+      try {
+        assertPurgeConfirm(body.data.confirm);
+        const result = await purgeExpense(req.params.id, req.agent!);
+        return { ok: true, ...result };
+      } catch (err) {
+        if (err instanceof CeresPurgeError) {
+          return reply.code(purgeErrorStatus(err.code)).send({ error: err.code });
+        }
+        throw err;
+      }
+    },
+  );
+
   // POST /api/ceres/expenses/:id/approve — Nee's daily approval (P1 step 3).
   app.post<{ Params: { id: string } }>(
     '/api/ceres/expenses/:id/approve',
@@ -647,6 +676,31 @@ export function p1Routes(app: FastifyInstance) {
     });
     return { movement };
   });
+
+  // POST /api/ceres/cash/:id/purge { confirm } — CEO-ONLY alpha hard-delete of a single
+  // CashMovement (owner directive, 2026-07-22). Only a BARE movement (deposit, legacy
+  // topup — never created by a request money event) is ever hard-deletable here; a
+  // movement a money event created (requestId/requestMoneyEventId set) 409s telling the
+  // caller to purge the REQUEST instead, so half a graph is never orphaned. See ceres/purge.ts.
+  app.post<{ Params: { id: string } }>(
+    '/api/ceres/cash/:id/purge',
+    { preHandler: requireCeresRole('ceo') },
+    async (req, reply) => {
+      if (!alphaPurgeEnabled()) return reply.code(403).send({ error: 'purge_disabled' });
+      const body = z.object({ confirm: z.string() }).safeParse(req.body);
+      if (!body.success) return reply.code(400).send({ error: 'invalid_body' });
+      try {
+        assertPurgeConfirm(body.data.confirm);
+        const result = await purgeCashMovement(req.params.id, req.agent!);
+        return { ok: true, ...result };
+      } catch (err) {
+        if (err instanceof CeresPurgeError) {
+          return reply.code(purgeErrorStatus(err.code)).send({ error: err.code });
+        }
+        throw err;
+      }
+    },
+  );
 
   // GET /api/ceres/movements?from=&to=&type=
   app.get('/api/ceres/movements', { preHandler: requireCeresRole('gm', 'ceo') }, async (req, reply) => {

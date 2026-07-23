@@ -134,7 +134,7 @@ export default function PhotoListUpload({
       // browser, report why the native scanner path was skipped. Remove once the app is
       // confirmed working in the field.
       const ua = navigator.userAgent;
-      if (/; wv\)/.test(ua) && !/Line\//i.test(ua)) {
+      if ((/CeresApp/.test(ua) || /; wv\)/.test(ua)) && !/Line\//i.test(ua)) {
         const cap = (window as any).Capacitor;
         const state = !cap
           ? 'bridge=none'

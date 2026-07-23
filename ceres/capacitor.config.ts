@@ -10,6 +10,12 @@ const config: CapacitorConfig = {
   appId: 'com.prominentdental.ceres',
   appName: 'Ceres',
   webDir: 'dist',
+  android: {
+    // Two jobs: (1) known workaround for capacitor#7269 — with a remote server.url, Android
+    // fails to inject window.Capacitor into the page unless SOME appendUserAgent is set;
+    // (2) gives the web app a precise "inside the Ceres shell" marker for diagnostics.
+    appendUserAgent: 'CeresApp',
+  },
   server: {
     url: 'https://ceres.prominentdental.com',
     androidScheme: 'https',

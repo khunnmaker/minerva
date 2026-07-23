@@ -46,14 +46,26 @@ jobs:
         run: npx cap sync android
 
       - name: Decode signing keystore (if configured)
-        if: ${{ secrets.CERES_ANDROID_KEYSTORE_B64 != '' }}
+        # Always runs; skips itself when the keystore secret is absent. Secrets flow in via
+        # step env (never shell-interpolated into the script body).
+        env:
+          KEYSTORE_B64: ${{ secrets.CERES_ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CERES_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CERES_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.CERES_KEY_PASSWORD }}
         run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "No keystore secret configured — building unsigned."
+            exit 0
+          fi
           KEYSTORE_PATH="${{ runner.temp }}/ceres.p12"
-          echo "${{ secrets.CERES_ANDROID_KEYSTORE_B64 }}" | base64 --decode > "$KEYSTORE_PATH"
-          echo "CERES_KEYSTORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
-          echo "CERES_KEYSTORE_PASSWORD=${{ secrets.CERES_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
-          echo "CERES_KEY_ALIAS=${{ secrets.CERES_KEY_ALIAS }}" >> "$GITHUB_ENV"
-          echo "CERES_KEY_PASSWORD=${{ secrets.CERES_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE_PATH"
+          {
+            echo "CERES_KEYSTORE_FILE=$KEYSTORE_PATH"
+            echo "CERES_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "CERES_KEY_ALIAS=$KEY_ALIAS"
+            echo "CERES_KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
 
       - name: Make gradlew executable
         working-directory: ceres/android

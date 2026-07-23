@@ -33,7 +33,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21' # Capacitor 8 targets Java 21 ("invalid source release: 21" on 17)
 
       - name: Install dependencies (repo root)
         run: npm ci

@@ -192,3 +192,92 @@ watch auto-answer rate + escalation log; tune confidence threshold; then announc
 - `public/serve.json` copied into the new frontend (stale-bundle fix).
 - Work from a worktree; never assume the shared tree is clean/main.
 - Real secret values never in chat, briefs, or prompts — placeholders only.
+
+---
+
+## 10. Amendment 2026-07-23 — Group-Listener lane (owner-approved)
+
+*Decision (Mike, 2026-07-23): Mali joins **every staff LINE group**, to answer in place and
+harvest knowledge from conversations already happening there. Approved with the narrow charter
+below — capture and answer, **not surveillance**.*
+
+### 10.1 Charter (the trust contract — announced openly to staff)
+
+- Mali's presence in groups is **declared**, never covert. Purpose (PDPA-defensible): answering
+  work questions and building the company knowledge base.
+- Raw group messages are retained on a **60-day rolling window** (pruned by a scheduled job),
+  as context for knowledge extraction — not a permanent archive.
+- What flows upward to the owner is **aggregates and KB candidates only** ("top unanswered
+  questions this week", "departments with most repeat questions") — never per-person chat logs
+  or "who said what" reports. This protects the exact behavior Mali needs: staff asking freely.
+- Personal / HR-sensitive conversation is excluded from capture entirely (LLM classifier gate at
+  the extraction step; anything flagged personal is dropped, not stored as knowledge).
+
+### 10.2 Technical facts (LINE platform)
+
+- Enable **"Allow bots to join group chats"** in the LINE Developers console for the Mali channel.
+- Once in a group, the webhook receives **every text message** (`source.type: 'group'`); media
+  fetchable via the content API.
+- `source.userId` is present **only for members who have added Mali as a friend** — so the group
+  rollout doubles as the friend-add onboarding push. Non-friend messages arrive anonymous; still
+  usable for KB extraction, just unattributed.
+- Bots never see other bots' messages (any group that also contains another OA is partially blind).
+
+### 10.3 Behavior in groups
+
+1. **Passive log** — every group message lands in `GroupMessage` (cheap DB write, **zero AI
+   tokens**). No reply, no reaction.
+2. **Mention answering** — on "@มะลิ …" / message starting "มะลิ": run the normal RAG pipeline
+   and reply **in the group**. ⚠️ Groups are mixed-audience and membership is not tier-checked,
+   so group answers draw from **audience `'everyone'` + `lineExposable` articles ONLY** — gm_plus
+   content never surfaces in a group, even if the asker personally holds the tier (they can DM
+   Mali 1:1 for that).
+3. **Nightly Q&A harvest** (batch, scheduled) — LLM pass over the last day's messages per group:
+   extract question→answer pairs resolved by humans in-chat → `KnowledgeQuestion`
+   (status `answered_human`, channel `'group'`) + draft article via the existing `distillArticle()`
+   review queue. The personal/HR-sensitive gate (10.1) runs here.
+4. **Weekly gap report** — recurring questions with no KB article, grouped by department →
+   surfaces in the จัดการ metrics page. This is the "what's happening operationally" view.
+
+Token tagging: `feature: 'group-answer' | 'group-harvest' | 'group-gap-report'`. The passive path
+costs nothing; AI runs only on mention + the two batch passes.
+
+### 10.4 Data model additions
+
+```
+MaliGroup      id, lineGroupId @unique, name, departmentId?, active Boolean @default(true)
+               // groupId→department mapping is a free routing signal for escalations
+GroupMessage   id, maliGroupId FK, lineUserId?, agentId? (resolved when bound+friend),
+               text, messageId, sentAt; index (maliGroupId, sentAt)
+               // pruned > 60 days by scheduled job — enforces the 10.1 retention promise
+```
+
+### 10.5 Phase impact
+
+- **Phase 0 addition (Mike):** inventory the staff groups (name → department), invite Mali into
+  each after Phase 1 ships the webhook, and tell staff to add her as a friend (announcement 10.6).
+- **New Phase 5 — group listener (Sol):** join/leave events + `MaliGroup` registry, passive log +
+  prune job, mention-answer path (everyone-tier guard **tested**), nightly harvest, weekly gap
+  report. Runs after the 1:1 pilot (Phase 4) proves the answer pipeline. *Accept: mention in a
+  group gets a cited everyone-tier answer; a human-answered question in a group becomes a draft
+  article overnight; a gm_plus article can never be induced into a group reply; messages older
+  than 60 days are gone.*
+
+### 10.6 Staff announcement (Thai — post in each group when Mali joins)
+
+> สวัสดีค่ะทุกคน 🌼 "น้องมะลิ" เข้ามาอยู่ในกลุ่มนะคะ มะลิเป็นผู้ช่วยด้านความรู้ของบริษัท
+> หน้าที่ของมะลิในกลุ่มมี 2 อย่างค่ะ:
+> • **ช่วยตอบคำถามเรื่องงาน** — พิมพ์ "มะลิ" ตามด้วยคำถามได้เลย เดี๋ยวมะลิตอบพร้อมแหล่งที่มา
+> • **เก็บความรู้เข้าคลัง** — คำถาม–คำตอบที่มีประโยชน์ในกลุ่ม มะลิจะสรุปเก็บไว้ ให้ครั้งหน้าตอบได้ทันที
+>
+> เพื่อความสบายใจ: มะลิ**ไม่เก็บบันทึกแชทถาวร** (ข้อความเก็บชั่วคราวเพื่อสกัดความรู้เท่านั้น แล้วลบ)
+> และ**ไม่มีการรายงานว่าใครพูดอะไร**ให้ผู้บริหารค่ะ เรื่องส่วนตัวมะลิไม่ยุ่งแน่นอน 🙏
+> อย่าลืม**แอดมะลิเป็นเพื่อน**ด้วยนะคะ มะลิจะได้รู้ว่าใครถามและตอบกลับถูกคนค่ะ
+
+### 10.7 New open questions for Mike
+
+6. **Group inventory:** which groups, and which department does each map to?
+7. **Retention window:** 60 days OK, or prefer 30?
+8. **Trigger word:** "มะลิ" prefix + @mention — enough, or also auto-answer clearly-work questions
+   unprompted? (Plan default: mention-only. Unprompted answering in groups risks feeling like an
+   eavesdropper and burns tokens; revisit after pilot.)

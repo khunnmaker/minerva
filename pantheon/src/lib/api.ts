@@ -48,6 +48,10 @@ let onUnauthorized: (() => void) | null = null;
 export function setOnUnauthorized(fn: (() => void) | null): void { onUnauthorized = fn; }
 
 export function hasAppAccess(agent: Agent, app: AppName): boolean {
+  // Mali is an all-staff app (mirrors api/src/auth/jwt.ts hasAppAccess) — a knowledge base
+  // everyone can't read defeats its purpose, so the portal tile must show for every account,
+  // not just supervisor/gm/per-person-grant.
+  if (app === 'mali') return true;
   if (agent.role === 'supervisor') return true;
   if (agent.role === 'gm') return app === 'ceres' || app === 'minerva' || app === 'juno' || app === 'apollo';
   return (agent.apps ?? []).includes(app);

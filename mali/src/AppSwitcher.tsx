@@ -1,21 +1,24 @@
-// Grant-aware suite app switcher — copy-adapted from juno/src/AppSwitcher.tsx (2026-07-18,
-// Ceres desktop nav) so the two apps share the same visual grammar. A dropdown anchored on
-// the current app's own brand (icon+name) that lets a logged-in user jump to the OTHER suite
-// apps they can access. Clicking the brand reveals the other apps as icon+text rows; when
-// there's nowhere to switch to, the brand renders exactly as it did before the switcher
-// existed (no chevron, non-interactive).
+// Grant-aware suite app switcher — a dropdown anchored on the current app's own brand
+// (icon+name) that lets a logged-in user jump to the OTHER suite apps they can access.
+// Clicking the brand reveals the other apps as icon+text rows; when there's nowhere to
+// switch to, the brand renders exactly as it did before the switcher existed (no chevron,
+// non-interactive).
 //
 // An app appears iff BOTH: the user has access (hasAppAccess, mirroring the server) AND
-// (it is the current app OR its VITE_<APP>_URL build-time env is set).
+// (it is the current app OR its VITE_<APP>_URL build-time env is set). Until those envs are
+// configured on Railway, only the current app's label shows — fully inert, no visual change.
 import { useEffect, useRef, useState } from 'react';
 import { Bot, Boxes, Wallet, Scale, Coins, ShoppingCart, ChevronDown, Users, Globe, Workflow, Flower2 } from 'lucide-react';
 import { hasAppAccess, type Agent, type AppName } from './lib/api';
 
-const CURRENT: AppName = 'ceres';
+const CURRENT: AppName = 'mali';
 
 // Suite app URLs: VITE_*_URL env override, with the canonical *.prominentdental.com subdomain
-// as the built-in default — must be same-site with the api for the shared SSO cookie (see
-// juno/src/AppSwitcher.tsx for the full explanation).
+// as the built-in default. The default MUST be same-site with the api (api.prominentdental.com)
+// or suite SSO breaks: the shared session cookie is SameSite=Lax + Domain=.prominentdental.com,
+// so it is only sent to /api/auth/me when the app is opened from a *.prominentdental.com origin.
+// A raw *.up.railway.app URL is a DIFFERENT site → the Lax cookie is withheld → bootstrap /me
+// returns 401 → the app shows Login even though the user is signed in.
 const APP_URL = {
   minerva: import.meta.env.VITE_MINERVA_URL ?? 'https://minerva.prominentdental.com',
   vesta: import.meta.env.VITE_VESTA_URL ?? 'https://vesta.prominentdental.com',
@@ -24,6 +27,7 @@ const APP_URL = {
   ceres: import.meta.env.VITE_CERES_URL ?? 'https://ceres.prominentdental.com',
   mercury: import.meta.env.VITE_MERCURY_URL ?? 'https://mercury.prominentdental.com',
   apollo: import.meta.env.VITE_APOLLO_URL ?? 'https://apollo.prominentdental.com',
+  mali: import.meta.env.VITE_MALI_URL ?? 'https://mali.prominentdental.com',
 };
 const APPS: { app: AppName; label: string; url: string | undefined }[] = [
   { app: 'minerva', label: 'Minerva', url: APP_URL.minerva },
@@ -33,9 +37,10 @@ const APPS: { app: AppName; label: string; url: string | undefined }[] = [
   { app: 'ceres', label: 'Ceres', url: APP_URL.ceres },
   { app: 'mercury', label: 'Mercury', url: APP_URL.mercury },
   { app: 'apollo', label: 'Apollo', url: APP_URL.apollo },
+  { app: 'mali', label: 'Mali', url: APP_URL.mali },
 ];
 
-// Canonical AppName carries all 8 suite apps (venus, diana included); this Record must
+// Canonical AppName now carries all 9 suite apps (venus, diana included); this Record must
 // enumerate every one. venus/diana have no switcher entry (not in APPS) so their icons are
 // inert placeholders — present only to keep the Record exhaustive.
 const APP_ICON: Record<AppName, typeof Bot> = {
@@ -78,12 +83,12 @@ export default function AppSwitcher({ agent }: { agent: Agent }) {
   }, [open]);
 
   // Nothing to switch to → render the brand exactly as it looked before the switcher existed:
-  // just the plain "Ceres" text + icon, no chevron, non-interactive.
+  // the Flower2 icon + "Mali" text, no chevron, non-interactive.
   if (items.length <= 1) {
     return (
-      <span className="flex items-center gap-2 font-bold text-lg">
-        <Coins size={22} /> Ceres
-      </span>
+      <div className="flex items-center gap-2 text-green-700 font-bold">
+        <Flower2 size={22} /> Mali
+      </div>
     );
   }
 
@@ -96,10 +101,10 @@ export default function AppSwitcher({ agent }: { agent: Agent }) {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="flex items-center gap-1 font-bold text-lg hover:opacity-80"
+        className="flex items-center gap-2 text-green-700 font-bold hover:opacity-80"
       >
-        <Coins size={22} />
-        Ceres
+        <Flower2 size={22} />
+        Mali
         <ChevronDown size={14} />
       </button>
       {open && (
@@ -115,7 +120,7 @@ export default function AppSwitcher({ agent }: { agent: Agent }) {
                 href={a.url}
                 role="menuitem"
                 title={`ไปที่ ${a.label}`}
-                className="flex items-center gap-2 px-3 py-2 text-sm text-slate-600 hover:bg-amber-50 hover:text-amber-700"
+                className="flex items-center gap-2 px-3 py-2 text-sm text-slate-600 hover:bg-green-50 hover:text-green-700"
               >
                 <Icon size={16} />
                 {a.label}

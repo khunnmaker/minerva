@@ -8,7 +8,7 @@
 // (it is the current app OR its VITE_<APP>_URL build-time env is set). Until those envs are
 // configured on Railway, only the current app's label shows — fully inert, no visual change.
 import { useEffect, useRef, useState } from 'react';
-import { Bot, Boxes, Wallet, Scale, Coins, ShoppingCart, ChevronDown, Users, Globe, Workflow } from 'lucide-react';
+import { Bot, Boxes, Wallet, Scale, Coins, ShoppingCart, ChevronDown, Users, Globe, Workflow, Flower2 } from 'lucide-react';
 import { hasAppAccess, type Agent, type AppName } from './lib/api';
 
 const CURRENT: AppName = 'minerva';
@@ -52,6 +52,7 @@ const APP_ICON: Record<AppName, typeof Bot> = {
   venus: Users,
   diana: Globe,
   apollo: Workflow,
+  mali: Flower2,
 };
 
 export default function AppSwitcher({ agent }: { agent: Agent }) {

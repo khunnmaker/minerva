@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#16a34a"/>
+  <g fill="none" stroke="#ffffff" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Flower2-ish jasmine bloom: 5 petals around a center, plus a small stem leaf -->
+    <circle cx="16" cy="14.5" r="2.2" fill="#ffffff" stroke="none"/>
+    <path d="M16 6.7c1.7 0 3 1.5 3 3.4 0 1.6-1.3 2.9-3 4.4-1.7-1.5-3-2.8-3-4.4 0-1.9 1.3-3.4 3-3.4Z"/>
+    <path d="M23.3 11.4c.9 1.5.4 3.4-1.2 4.4-1.4.8-3.1.4-5.1-.5.6-2.1 1.2-3.7 2.6-4.5 1.6-1 3.5-.6 3.7.6Z"/>
+    <path d="M21.1 20.9c-1.7.5-3.4-.4-3.9-2.1-.5-1.6.3-3.1 2-4.6 1.7 1 3.1 2 3.6 3.6.6 1.8-.3 3.4-1.7 3.1Z"/>
+    <path d="M10.9 20.9c-1.4.3-2.3-1.3-1.7-3.1.5-1.6 1.9-2.6 3.6-3.6 1.7 1.5 2.5 3 2 4.6-.5 1.7-2.2 2.6-3.9 2.1Z"/>
+    <path d="M8.7 11.4c.2-1.2 2.1-1.6 3.7-.6 1.4.8 2 2.4 2.6 4.5-2 .9-3.7 1.3-5.1.5-1.6-1-2.1-2.9-1.2-4.4Z"/>
+    <path d="M16 19v6.3M13 24c1-1.4 2.1-1.4 3-.6"/>
+  </g>
+</svg>

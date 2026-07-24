@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   embedOne: vi.fn(),
   retrieve: vi.fn(),
   callClaude: vi.fn(),
+  prepareEscalation: vi.fn(),
 }));
 
 vi.mock('../env.js', () => ({ env: mocks.env }));
@@ -18,6 +19,7 @@ vi.mock('../memory/embeddings.js', () => ({
   retrieveRelevantKnowledge: mocks.retrieve,
 }));
 vi.mock('../llm/anthropic.js', () => ({ callClaude: mocks.callClaude }));
+vi.mock('./routing.js', () => ({ prepareEscalation: mocks.prepareEscalation }));
 
 import { answerMaliQuestion, bangkokDayBounds } from './answer.js';
 
@@ -40,6 +42,13 @@ describe('answerMaliQuestion', () => {
     mocks.create.mockImplementation(async ({ data }) => ({ id: 'question-1', ...data }));
     mocks.embedOne.mockResolvedValue([0.1, 0.2]);
     mocks.retrieve.mockResolvedValue([article]);
+    mocks.prepareEscalation.mockResolvedValue({
+      questionId: 'question-1',
+      departmentId: 'hr',
+      departmentName: 'บุคคล',
+      departmentChoices: [],
+      routeReady: true,
+    });
     mocks.callClaude.mockImplementation(async (...args: unknown[]) => {
       const meta = args[4] as { feature?: string } | undefined;
       return meta?.feature === 'confidence'
@@ -59,9 +68,12 @@ describe('answerMaliQuestion', () => {
     });
 
     expect(result.status).toBe('waiting');
-    expect(result.message).toBe('ขอส่งต่อให้ผู้เกี่ยวข้องก่อนนะคะ จะรีบแจ้งเมื่อได้คำตอบค่ะ');
+    expect(result.message).toContain('แผนก บุคคล');
     expect(mocks.callClaude).not.toHaveBeenCalled();
-    expect(mocks.create).toHaveBeenCalledWith({ data: expect.objectContaining({ status: 'waiting', topSimilarity: 0.54 }) });
+    expect(mocks.prepareEscalation).toHaveBeenCalledWith(expect.objectContaining({
+      askerAgentId: 'agent-1',
+      matchedArticles: [expect.objectContaining({ similarity: 0.54 })],
+    }));
   });
 
   it('logs answered_auto and appends deterministic article-title citations above the gate', async () => {
@@ -112,7 +124,7 @@ describe('answerMaliQuestion', () => {
       undefined,
       { app: 'mali', feature: 'confidence' },
     );
-    expect(mocks.create).toHaveBeenCalledWith({ data: expect.objectContaining({ status: 'waiting' }) });
+    expect(mocks.prepareEscalation).toHaveBeenCalledTimes(1);
   });
 
   it('treats an above-threshold answer that admits uncertainty as waiting', async () => {
@@ -127,7 +139,7 @@ describe('answerMaliQuestion', () => {
     });
 
     expect(result.status).toBe('waiting');
-    expect(mocks.create).toHaveBeenCalledWith({ data: expect.objectContaining({ status: 'waiting' }) });
+    expect(mocks.prepareEscalation).toHaveBeenCalledTimes(1);
   });
 
   it('trips at the configured daily count without embedding or logging another question', async () => {

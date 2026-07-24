@@ -3,9 +3,9 @@ import { prisma } from '../db/prisma.js';
 import { env } from '../env.js';
 import { callClaude } from '../llm/anthropic.js';
 import { embedOne, retrieveRelevantKnowledge, type RetrievedKnowledgeArticle } from '../memory/embeddings.js';
+import { prepareEscalation, type DepartmentChoice } from './routing.js';
 
 const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
-const FORWARD_MESSAGE = 'ขอส่งต่อให้ผู้เกี่ยวข้องก่อนนะคะ จะรีบแจ้งเมื่อได้คำตอบค่ะ';
 const UNKNOWN_ANSWER_RE = /(ไม่ทราบ|ไม่รู้|ไม่แน่ใจ|ไม่มีข้อมูล|ข้อมูลไม่เพียงพอ|ไม่สามารถตอบ|หา(?:ข้อมูล)?.*ไม่พบ)/i;
 
 export interface MaliQuestionInput {
@@ -16,7 +16,14 @@ export interface MaliQuestionInput {
 }
 
 export type MaliAnswerResult =
-  | { status: 'answered_auto' | 'waiting'; message: string; questionId: string }
+  | { status: 'answered_auto'; message: string; questionId: string }
+  | {
+      status: 'waiting';
+      message: string;
+      questionId: string;
+      departmentChoices: DepartmentChoice[];
+      routeReady: boolean;
+    }
   | { status: 'rate_limited'; message: string };
 
 export function bangkokDayBounds(now: Date): { start: Date; end: Date } {
@@ -57,18 +64,30 @@ function citedAnswer(answer: string, articles: RetrievedKnowledgeArticle[]): str
   return `${body}\n\nที่มา: ${titles.join(', ')}`;
 }
 
-async function logWaiting(input: MaliQuestionInput, articles: RetrievedKnowledgeArticle[]) {
-  return prisma.knowledgeQuestion.create({
-    data: {
-      askerAgentId: input.agent.id,
-      channel: input.channel,
-      questionText: input.questionText,
-      status: 'waiting',
-      matchedArticleIds: articles.map((article) => article.id),
-      topSimilarity: articles[0]?.similarity ?? null,
-      askedAt: input.now,
-    },
+async function waitingResult(
+  input: MaliQuestionInput,
+  articles: RetrievedKnowledgeArticle[],
+  now: Date,
+): Promise<Extract<MaliAnswerResult, { status: 'waiting' }>> {
+  const escalation = await prepareEscalation({
+    askerAgentId: input.agent.id,
+    channel: input.channel,
+    questionText: input.questionText,
+    matchedArticles: articles,
+    now,
   });
+  const message = escalation.departmentName
+    ? `ส่งต่อให้แผนก ${escalation.departmentName} แล้วค่ะ จะแจ้งทันทีเมื่อได้คำตอบนะคะ`
+    : escalation.departmentChoices.length
+      ? 'คำถามนี้ควรส่งต่อให้แผนกไหนคะ กรุณาเลือกด้านล่างค่ะ'
+      : 'ส่งต่อให้ผู้ดูแลแล้วค่ะ จะแจ้งทันทีเมื่อได้คำตอบนะคะ';
+  return {
+    status: 'waiting',
+    message,
+    questionId: escalation.questionId,
+    departmentChoices: escalation.departmentChoices,
+    routeReady: escalation.routeReady,
+  };
 }
 
 export async function answerMaliQuestion(input: MaliQuestionInput): Promise<MaliAnswerResult> {
@@ -89,13 +108,11 @@ export async function answerMaliQuestion(input: MaliQuestionInput): Promise<Mali
     const queryVec = await embedOne(input.questionText, 'query', { app: 'mali', feature: 'staff-answer' });
     articles = await retrieveRelevantKnowledge(queryVec, input.agent.role, input.channel, 6);
   } catch {
-    const question = await logWaiting({ ...input, now }, articles);
-    return { status: 'waiting', message: FORWARD_MESSAGE, questionId: question.id };
+    return waitingResult(input, articles, now);
   }
 
   if (!articles.length || articles[0].similarity < env.MALI_MIN_SIMILARITY) {
-    const question = await logWaiting({ ...input, now }, articles);
-    return { status: 'waiting', message: FORWARD_MESSAGE, questionId: question.id };
+    return waitingResult(input, articles, now);
   }
 
   const confidenceSystem = `ตรวจว่าบทความอ้างอิงตอบคำถามของพนักงานได้โดยตรง ครบถ้วน และไม่ขัดแย้งกันหรือไม่
@@ -111,12 +128,10 @@ export async function answerMaliQuestion(input: MaliQuestionInput): Promise<Mali
       { app: 'mali', feature: 'confidence' },
     );
     if (!isConfidentDecision(confidence)) {
-      const question = await logWaiting({ ...input, now }, articles);
-      return { status: 'waiting', message: FORWARD_MESSAGE, questionId: question.id };
+      return waitingResult(input, articles, now);
     }
   } catch {
-    const question = await logWaiting({ ...input, now }, articles);
-    return { status: 'waiting', message: FORWARD_MESSAGE, questionId: question.id };
+    return waitingResult(input, articles, now);
   }
 
   const system = `คุณคือน้องมะลิ ผู้ช่วยความรู้ภายในบริษัท ตอบภาษาไทยสุภาพด้วยบุคลิกผู้หญิงและลงท้ายค่ะ
@@ -137,13 +152,11 @@ ${sourceBlock(articles)}`;
       { app: 'mali', feature: 'staff-answer' },
     )).trim();
   } catch {
-    const question = await logWaiting({ ...input, now }, articles);
-    return { status: 'waiting', message: FORWARD_MESSAGE, questionId: question.id };
+    return waitingResult(input, articles, now);
   }
 
   if (!rawAnswer || UNKNOWN_ANSWER_RE.test(rawAnswer)) {
-    const question = await logWaiting({ ...input, now }, articles);
-    return { status: 'waiting', message: FORWARD_MESSAGE, questionId: question.id };
+    return waitingResult(input, articles, now);
   }
 
   const question = await prisma.knowledgeQuestion.create({

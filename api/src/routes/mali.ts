@@ -8,10 +8,17 @@ import {
   embedKnowledgeArticle,
   knowledgeArticleEmbeddingText,
 } from '../memory/embeddings.js';
+import {
+  completeHumanAnswer,
+  HumanAnswerError,
+  recordHumanAnswer,
+} from '../mali/humanAnswer.js';
+import { assignQuestionDepartment, dispatchEscalation } from '../mali/routing.js';
 
 const audienceSchema = z.enum(['everyone', 'gm_plus', 'supervisor']);
 const articleStatusSchema = z.enum(['draft', 'published', 'archived']);
 const articleSourceSchema = z.enum(['seed', 'distilled', 'manual']);
+const questionStatusSchema = z.enum(['answered_auto', 'waiting', 'answered_human', 'rejected']);
 
 const createArticleBody = z.object({
   title: z.string().trim().min(1).max(300),
@@ -30,11 +37,20 @@ const departmentBody = z.object({
   nameTh: z.string().trim().min(1).max(200),
   answererAgentIds: z.array(z.string().trim().min(1).max(100)).max(100).default([]),
 });
+const answerBody = z.object({ answer: z.string().trim().min(1).max(100_000) });
+const routeQuestionBody = z.object({ departmentId: z.string().trim().min(1).max(100) });
 
 function audienceWhere(role: Role) {
   if (role === 'supervisor') return {};
   if (role === 'gm' || role === 'central') return { audience: { in: ['everyone', 'gm_plus'] } };
   return { audience: 'everyone' };
+}
+
+async function normalizeAnswererIds(ids: string[]): Promise<string[] | null> {
+  const unique = [...new Set(ids)];
+  if (!unique.length) return unique;
+  const count = await prisma.agent.count({ where: { id: { in: unique } } });
+  return count === unique.length ? unique : null;
 }
 
 export async function maliRoutes(app: FastifyInstance) {
@@ -62,7 +78,7 @@ export async function maliRoutes(app: FastifyInstance) {
       data: {
         ...data,
         sourceQuestionId: data.sourceQuestionId ?? null,
-        lineExposable: lineExposable ?? data.audience !== 'supervisor',
+        lineExposable: data.audience === 'supervisor' ? false : (lineExposable ?? true),
         authorAgentId: req.agent!.id,
       },
     });
@@ -80,9 +96,7 @@ export async function maliRoutes(app: FastifyInstance) {
     const data = {
       ...parsed.data,
       ...(parsed.data.sourceQuestionId === undefined ? {} : { sourceQuestionId: parsed.data.sourceQuestionId }),
-      ...(parsed.data.audience === 'supervisor' && parsed.data.lineExposable === undefined
-        ? { lineExposable: false }
-        : {}),
+      ...(parsed.data.audience === 'supervisor' ? { lineExposable: false } : {}),
     };
     const article = await prisma.knowledgeArticle.update({ where: { id: req.params.id }, data });
     if (article.status === 'published') {
@@ -108,10 +122,21 @@ export async function maliRoutes(app: FastifyInstance) {
     departments: await prisma.knowledgeDepartment.findMany({ orderBy: [{ code: 'asc' }] }),
   }));
 
+  app.get('/api/mali/agents', supervisorOnly, async () => ({
+    agents: (await prisma.agent.findMany({
+      select: { id: true, name: true, email: true, role: true, lineUserId: true },
+      orderBy: { name: 'asc' },
+    })).map(({ lineUserId, ...agent }) => ({ ...agent, lineBound: !!lineUserId })),
+  }));
+
   app.post('/api/mali/departments', supervisorOnly, async (req, reply) => {
     const parsed = departmentBody.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_body', issues: parsed.error.issues });
-    const department = await prisma.knowledgeDepartment.create({ data: parsed.data });
+    const answererAgentIds = await normalizeAnswererIds(parsed.data.answererAgentIds);
+    if (!answererAgentIds) return reply.code(400).send({ error: 'invalid_answerer_agent_ids' });
+    const department = await prisma.knowledgeDepartment.create({
+      data: { ...parsed.data, answererAgentIds },
+    });
     return reply.code(201).send({ department });
   });
 
@@ -120,7 +145,16 @@ export async function maliRoutes(app: FastifyInstance) {
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_body', issues: parsed.error.issues });
     const existing = await prisma.knowledgeDepartment.findUnique({ where: { id: req.params.id } });
     if (!existing) return reply.code(404).send({ error: 'not_found' });
-    return { department: await prisma.knowledgeDepartment.update({ where: { id: req.params.id }, data: parsed.data }) };
+    const answererAgentIds = parsed.data.answererAgentIds === undefined
+      ? undefined
+      : await normalizeAnswererIds(parsed.data.answererAgentIds);
+    if (answererAgentIds === null) return reply.code(400).send({ error: 'invalid_answerer_agent_ids' });
+    return {
+      department: await prisma.knowledgeDepartment.update({
+        where: { id: req.params.id },
+        data: { ...parsed.data, ...(answererAgentIds === undefined ? {} : { answererAgentIds }) },
+      }),
+    };
   });
 
   app.delete<{ Params: { id: string } }>('/api/mali/departments/:id', supervisorOnly, async (req, reply) => {
@@ -135,11 +169,92 @@ export async function maliRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  app.get('/api/mali/questions', supervisorOnly, async (req) => {
-    const parsed = z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }).safeParse(req.query);
-    const limit = parsed.success ? parsed.data.limit : 100;
+  app.get('/api/mali/questions', async (req, reply) => {
+    const parsed = z.object({
+      limit: z.coerce.number().int().min(1).max(500).default(100),
+      status: questionStatusSchema.optional(),
+    }).safeParse(req.query);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_query', issues: parsed.error.issues });
+    const departmentIds = req.agent!.role === 'supervisor'
+      ? null
+      : (await prisma.knowledgeDepartment.findMany({
+          where: { answererAgentIds: { has: req.agent!.id } },
+          select: { id: true },
+        })).map((department) => department.id);
     return {
-      questions: await prisma.knowledgeQuestion.findMany({ orderBy: { askedAt: 'desc' }, take: limit }),
+      questions: await prisma.knowledgeQuestion.findMany({
+        where: {
+          ...(parsed.data.status ? { status: parsed.data.status } : {}),
+          ...(departmentIds ? { departmentId: { in: departmentIds } } : {}),
+        },
+        orderBy: { askedAt: 'desc' },
+        take: parsed.data.limit,
+      }),
     };
   });
+
+  app.post<{ Params: { id: string } }>('/api/mali/questions/:id/answer', async (req, reply) => {
+    const parsed = answerBody.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_body', issues: parsed.error.issues });
+    try {
+      const question = await recordHumanAnswer({
+        questionId: req.params.id,
+        answer: parsed.data.answer,
+        actor: { id: req.agent!.id, role: req.agent!.role },
+      });
+      const completion = await completeHumanAnswer(question.id);
+      return { question, completion };
+    } catch (error) {
+      if (!(error instanceof HumanAnswerError)) throw error;
+      const code = error.code === 'not_found' ? 404 : error.code === 'forbidden' ? 403 : 409;
+      return reply.code(code).send({ error: error.code });
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/api/mali/questions/:id/route', supervisorOnly, async (req, reply) => {
+    const parsed = routeQuestionBody.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_body', issues: parsed.error.issues });
+    const question = await prisma.knowledgeQuestion.findUnique({
+      where: { id: req.params.id },
+      select: { status: true },
+    });
+    if (!question) return reply.code(404).send({ error: 'not_found' });
+    if (question.status !== 'waiting' && question.status !== 'answered_human') {
+      return reply.code(409).send({ error: 'question_not_routable' });
+    }
+    const assigned = await assignQuestionDepartment(
+      req.params.id,
+      parsed.data.departmentId,
+      undefined,
+      question.status,
+    );
+    if (!assigned.assigned) return reply.code(409).send({ error: 'not_routable_or_already_routed' });
+    return {
+      assigned,
+      dispatch: question.status === 'waiting' ? await dispatchEscalation(req.params.id) : null,
+    };
+  });
+
+  app.post<{ Params: { id: string } }>('/api/mali/questions/:id/distill', supervisorOnly, async (req, reply) => {
+    const question = await prisma.knowledgeQuestion.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!question) return reply.code(404).send({ error: 'not_found' });
+    return { completion: await completeHumanAnswer(question.id) };
+  });
+
+  app.get('/api/mali/review', supervisorOnly, async () => ({
+    articles: await prisma.knowledgeArticle.findMany({
+      where: { status: 'draft', source: 'distilled' },
+      orderBy: { createdAt: 'asc' },
+    }),
+    pendingDistillQuestions: await prisma.knowledgeQuestion.findMany({
+      where: {
+        status: 'answered_human',
+        distilledArticleId: null,
+      },
+      orderBy: { answeredAt: 'asc' },
+    }),
+  }));
 }

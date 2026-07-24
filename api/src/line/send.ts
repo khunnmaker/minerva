@@ -11,7 +11,17 @@ export interface SendResult {
 }
 
 type LineOutMessage =
-  | { type: 'text'; text: string; quoteToken?: string }
+  | {
+      type: 'text';
+      text: string;
+      quoteToken?: string;
+      quickReply?: {
+        items: Array<{
+          type: 'action';
+          action: { type: 'postback'; label: string; data: string; displayText?: string };
+        }>;
+      };
+    }
   | { type: 'image'; originalContentUrl: string; previewImageUrl: string };
 
 const dryRunForced = () => env.LINE_DRY_RUN === '1' || env.LINE_DRY_RUN.toLowerCase() === 'true';
@@ -79,6 +89,7 @@ export async function sendMaliLineText(
   lineUserId: string,
   replyToken: string | undefined,
   text: string,
+  quickReplyItems?: Array<{ label: string; data: string; displayText?: string }>,
 ): Promise<SendResult> {
   const client = getMaliLineClient();
   if (!client || dryRunForced()) {
@@ -87,9 +98,24 @@ export async function sendMaliLineText(
     return { sent: false, dryRun: true };
   }
 
+  const message: LineOutMessage = {
+    type: 'text',
+    text,
+    ...(quickReplyItems?.length
+      ? {
+          quickReply: {
+            items: quickReplyItems.slice(0, 13).map((item) => ({
+              type: 'action' as const,
+              action: { type: 'postback' as const, ...item },
+            })),
+          },
+        }
+      : {}),
+  };
+
   if (replyToken) {
     try {
-      const res = await client.replyMessage({ replyToken, messages: [{ type: 'text', text }] });
+      const res = await client.replyMessage({ replyToken, messages: [message as never] });
       const sentMessage = res?.sentMessages?.[0] as { id?: string; quoteToken?: string } | undefined;
       return {
         sent: true,
@@ -102,7 +128,13 @@ export async function sendMaliLineText(
     }
   }
 
-  return push(client, 'mali', lineUserId, [{ type: 'text', text }]);
+  return push(client, 'mali', lineUserId, [message]);
+}
+
+// Escalations and delayed human-answer delivery have no webhook reply token, so
+// they deliberately use a push on Mali's own OA.
+export async function pushMaliLineText(lineUserId: string, text: string): Promise<SendResult> {
+  return push(getMaliLineClient(), 'mali', lineUserId, [{ type: 'text', text }]);
 }
 
 // Image(s) only — no text bubble (LINE rejects empty text). For an instant photo send.

@@ -189,7 +189,7 @@ model KnowledgeArticle {
   status           String
   source           String
   authorAgentId    String
-  sourceQuestionId String?
+  sourceQuestionId String?  @unique
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 }
@@ -199,6 +199,8 @@ model KnowledgeDepartment {
   code             String   @unique
   nameTh           String
   answererAgentIds String[]
+
+  @@index([answererAgentIds], type: Gin)
 }
 
 model KnowledgeQuestion {
@@ -215,6 +217,11 @@ model KnowledgeQuestion {
   distilledArticleId String?
   askedAt             DateTime @default(now())
   answeredAt          DateTime?
+  routedAt            DateTime?
+  answerDeliveredAt   DateTime?
+  distillationClaimedAt DateTime?
+
+  @@index([status, departmentId, askedAt])
 }
 
 // ─── Apollo: employee work management ──────────────────────────────────────

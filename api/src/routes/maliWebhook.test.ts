@@ -7,6 +7,15 @@ const mocks = vi.hoisted(() => ({
   parseBind: vi.fn(),
   handleBind: vi.fn(),
   answer: vi.fn(),
+  recordHumanAnswer: vi.fn(),
+  completeHumanAnswer: vi.fn(),
+  parseHumanAnswer: vi.fn(),
+  assignDepartment: vi.fn(),
+  departmentQuickReplies: vi.fn(),
+  dispatchEscalation: vi.fn(),
+  loadDepartmentPicker: vi.fn(),
+  parseDepartmentPagePostback: vi.fn(),
+  parseDepartmentPostback: vi.fn(),
   ingestVisit: vi.fn(),
   verifySignature: vi.fn(),
   env: {
@@ -25,6 +34,20 @@ vi.mock('../line/staffBind.js', () => ({
 }));
 vi.mock('../line/signature.js', () => ({ verifyLineSignature: mocks.verifySignature }));
 vi.mock('../mali/answer.js', () => ({ answerMaliQuestion: mocks.answer }));
+vi.mock('../mali/humanAnswer.js', () => ({
+  HumanAnswerError: class HumanAnswerError extends Error {},
+  recordHumanAnswer: mocks.recordHumanAnswer,
+  completeHumanAnswer: mocks.completeHumanAnswer,
+  parseLineHumanAnswer: mocks.parseHumanAnswer,
+}));
+vi.mock('../mali/routing.js', () => ({
+  assignQuestionDepartment: mocks.assignDepartment,
+  departmentQuickReplies: mocks.departmentQuickReplies,
+  dispatchEscalation: mocks.dispatchEscalation,
+  loadDepartmentPicker: mocks.loadDepartmentPicker,
+  parseDepartmentPagePostback: mocks.parseDepartmentPagePostback,
+  parseDepartmentPostback: mocks.parseDepartmentPostback,
+}));
 vi.mock('../venus/visits.js', () => ({
   ingestVenusGroupMessage: mocks.ingestVisit,
 }));
@@ -53,6 +76,8 @@ describe('Mali webhook event gate', () => {
     mocks.env.MALI_LINE_CHANNEL_SECRET = 'configured';
     mocks.verifySignature.mockReturnValue(true);
     mocks.parseBind.mockReturnValue(null);
+    mocks.parseHumanAnswer.mockReturnValue(null);
+    mocks.departmentQuickReplies.mockReturnValue([]);
     mocks.sendMali.mockResolvedValue({ sent: true, dryRun: false });
     mocks.ingestVisit.mockResolvedValue(true);
     mocks.env.VENUS_VISITS_GROUP_ID = 'C-sales';
@@ -110,6 +135,67 @@ describe('Mali webhook event gate', () => {
       channel: 'mali', replyToken: 'reply-bind',
     });
     expect(mocks.agentFindUnique).not.toHaveBeenCalled();
+  });
+
+  it('captures an assigned answerer LINE reply before treating it as a new question', async () => {
+    mocks.agentFindUnique.mockResolvedValue({ id: 'answerer-1', role: 'staff' });
+    mocks.parseHumanAnswer.mockReturnValue({ questionId: 'question-1', answer: 'คำตอบ' });
+    mocks.recordHumanAnswer.mockResolvedValue({ id: 'question-1' });
+    mocks.completeHumanAnswer.mockResolvedValue({
+      delivered: true,
+      distill: { status: 'created', articleId: 'article-1' },
+    });
+
+    await handleMaliLineEvent({
+      type: 'message',
+      replyToken: 'reply-answer',
+      source: { type: 'user', userId: 'U-answerer' },
+      message: { type: 'text', text: '#question-1 คำตอบ' },
+    });
+
+    expect(mocks.recordHumanAnswer).toHaveBeenCalledWith({
+      questionId: 'question-1',
+      answer: 'คำตอบ',
+      actor: { id: 'answerer-1', role: 'staff' },
+    });
+    expect(mocks.sendMali).toHaveBeenCalledWith(
+      'U-answerer',
+      'reply-answer',
+      expect.stringContaining('รับคำตอบแล้ว'),
+    );
+    expect(mocks.completeHumanAnswer).toHaveBeenCalledWith('question-1');
+    expect(mocks.answer).not.toHaveBeenCalled();
+  });
+
+  it('applies a department postback only for the bound asker, replies first, then dispatches', async () => {
+    mocks.agentFindUnique.mockResolvedValue({ id: 'asker-1', role: 'staff' });
+    mocks.parseDepartmentPostback.mockReturnValue({
+      questionId: 'question-1',
+      departmentId: 'dept-a',
+    });
+    mocks.assignDepartment.mockResolvedValue({ assigned: true, departmentName: 'ฝ่าย ก' });
+    mocks.dispatchEscalation.mockResolvedValue({
+      targetCount: 1,
+      pushedCount: 1,
+      usedSupervisorFallback: false,
+    });
+
+    await handleMaliLineEvent({
+      type: 'postback',
+      replyToken: 'reply-picker',
+      source: { type: 'user', userId: 'U-asker' },
+      postback: { data: 'mali:department:question-1:dept-a' },
+    });
+
+    expect(mocks.assignDepartment).toHaveBeenCalledWith('question-1', 'dept-a', 'asker-1');
+    expect(mocks.sendMali).toHaveBeenCalledWith(
+      'U-asker',
+      'reply-picker',
+      expect.stringContaining('ฝ่าย ก'),
+    );
+    expect(mocks.sendMali.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.dispatchEscalation.mock.invocationCallOrder[0],
+    );
   });
 
   it('routes the configured group to Venus before the 1:1 KB lane', async () => {
@@ -178,6 +264,8 @@ describe('Mali webhook route security boundary', () => {
     mocks.env.MALI_LINE_CHANNEL_SECRET = 'configured';
     mocks.verifySignature.mockReturnValue(true);
     mocks.parseBind.mockReturnValue(null);
+    mocks.parseHumanAnswer.mockReturnValue(null);
+    mocks.departmentQuickReplies.mockReturnValue([]);
     mocks.sendMali.mockResolvedValue({ sent: true, dryRun: false });
     mocks.ingestVisit.mockResolvedValue(true);
     mocks.env.VENUS_VISITS_GROUP_ID = 'C-sales';
@@ -240,7 +328,7 @@ describe('Mali webhook route security boundary', () => {
 
   it('handles events with a valid signature and well-formed body', async () => {
     mocks.agentFindUnique.mockResolvedValue({ id: 'agent-1', role: 'central' });
-    mocks.answer.mockResolvedValue({ message: 'answer' });
+    mocks.answer.mockResolvedValue({ status: 'answered_auto', message: 'answer', questionId: 'q-1' });
     const app = await buildTestApp();
 
     const response = await app.inject({
@@ -267,6 +355,73 @@ describe('Mali webhook route security boundary', () => {
       questionText: 'question',
       channel: 'line',
     });
-    expect(mocks.sendMali).toHaveBeenCalledWith('U-valid', 'reply-valid', 'answer');
+    expect(mocks.sendMali).toHaveBeenCalledWith('U-valid', 'reply-valid', 'answer', undefined);
+  });
+
+  it('acknowledges LINE redeliveries without repeating retrieval, LLM, or sends', async () => {
+    const app = await buildTestApp();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/webhook/mali',
+      headers: { 'x-line-signature': 'valid' },
+      payload: {
+        events: [{
+          type: 'message',
+          webhookEventId: '01H-duplicate',
+          deliveryContext: { isRedelivery: true },
+          replyToken: 'reply-redelivery',
+          source: { type: 'user', userId: 'U-valid' },
+          message: { type: 'text', text: 'question' },
+        }],
+      },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true });
+    expect(mocks.agentFindUnique).not.toHaveBeenCalled();
+    expect(mocks.answer).not.toHaveBeenCalled();
+    expect(mocks.dispatchEscalation).not.toHaveBeenCalled();
+    expect(mocks.sendMali).not.toHaveBeenCalled();
+  });
+
+  it('spends the reply token before dispatching a ready escalation', async () => {
+    mocks.agentFindUnique.mockResolvedValue({ id: 'agent-1', role: 'staff' });
+    mocks.answer.mockResolvedValue({
+      status: 'waiting',
+      message: 'เลือกแผนกค่ะ',
+      questionId: 'question-1',
+      departmentChoices: [],
+      routeReady: true,
+    });
+    mocks.departmentQuickReplies.mockReturnValue([]);
+    mocks.dispatchEscalation.mockResolvedValue({
+      targetCount: 1,
+      pushedCount: 1,
+      usedSupervisorFallback: true,
+    });
+
+    const app = await buildTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/webhook/mali',
+      headers: { 'x-line-signature': 'valid' },
+      payload: {
+        events: [{
+          type: 'message',
+          replyToken: 'reply-waiting',
+          source: { type: 'user', userId: 'U-valid' },
+          message: { type: 'text', text: 'คำถามใหม่' },
+        }],
+      },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(mocks.sendMali).toHaveBeenCalledWith('U-valid', 'reply-waiting', 'เลือกแผนกค่ะ', []);
+    expect(mocks.sendMali.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.dispatchEscalation.mock.invocationCallOrder[0],
+    );
   });
 });

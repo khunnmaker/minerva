@@ -14,7 +14,7 @@ vi.mock('./client.js', () => ({
   getMaliLineClient: vi.fn(() => mocks.client),
 }));
 
-import { sendMaliLineText } from './send.js';
+import { pushMaliLineText, sendMaliLineText } from './send.js';
 
 describe('sendMaliLineText', () => {
   beforeEach(() => {
@@ -42,5 +42,42 @@ describe('sendMaliLineText', () => {
       to: 'U-staff', messages: [{ type: 'text', text: 'คำตอบค่ะ' }],
     });
     expect(result.channelMsgId).toBe('push-id');
+  });
+
+  it('puts data-driven department actions on the reply-token message', async () => {
+    await sendMaliLineText('U-staff', 'reply-token', 'เลือกแผนกค่ะ', [{
+      label: 'ฝ่าย ก',
+      data: 'mali:department:q-1:d-1',
+      displayText: 'ส่งต่อให้ ฝ่าย ก',
+    }]);
+
+    expect(mocks.replyMessage).toHaveBeenCalledWith({
+      replyToken: 'reply-token',
+      messages: [{
+        type: 'text',
+        text: 'เลือกแผนกค่ะ',
+        quickReply: {
+          items: [{
+            type: 'action',
+            action: {
+              type: 'postback',
+              label: 'ฝ่าย ก',
+              data: 'mali:department:q-1:d-1',
+              displayText: 'ส่งต่อให้ ฝ่าย ก',
+            },
+          }],
+        },
+      }],
+    });
+  });
+
+  it('uses push directly for escalation notifications', async () => {
+    await pushMaliLineText('U-answerer', 'มีคำถามรอคำตอบ');
+
+    expect(mocks.replyMessage).not.toHaveBeenCalled();
+    expect(mocks.pushMessage).toHaveBeenCalledWith({
+      to: 'U-answerer',
+      messages: [{ type: 'text', text: 'มีคำถามรอคำตอบ' }],
+    });
   });
 });

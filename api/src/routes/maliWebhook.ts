@@ -6,6 +6,20 @@ import { handleStaffBindCommand, parseStaffBindCommand } from '../line/staffBind
 import { sendMaliLineText } from '../line/send.js';
 import { verifyLineSignature } from '../line/signature.js';
 import { answerMaliQuestion } from '../mali/answer.js';
+import {
+  completeHumanAnswer,
+  HumanAnswerError,
+  parseLineHumanAnswer,
+  recordHumanAnswer,
+} from '../mali/humanAnswer.js';
+import {
+  assignQuestionDepartment,
+  departmentQuickReplies,
+  dispatchEscalation,
+  loadDepartmentPicker,
+  parseDepartmentPagePostback,
+  parseDepartmentPostback,
+} from '../mali/routing.js';
 import { ingestVenusGroupMessage } from '../venus/visits.js';
 
 const MAX_EVENTS = 50;
@@ -21,7 +35,10 @@ interface MaliLineMessage {
 export interface MaliLineEvent {
   type: string;
   replyToken?: string;
+  webhookEventId?: string;
+  deliveryContext?: { isRedelivery?: boolean };
   message?: MaliLineMessage;
+  postback?: { data?: string };
   source?: { type: string; userId?: string; groupId?: string };
   timestamp?: number;
 }
@@ -36,11 +53,13 @@ export async function handleMaliLineEvent(
   ev: MaliLineEvent,
   log?: Pick<FastifyBaseLogger, 'error' | 'info'>,
 ): Promise<void> {
-  if (ev.type !== 'message' || !ev.message) return;
+  // LINE retries an entire webhook batch when the original request times out.
+  // Retried events have unusable reply tokens and must not repeat LLM work or pushes.
+  if (ev.deliveryContext?.isRedelivery === true) return;
 
   // Venus sales-group lane must stay ahead of Mali's 1:1 KB gate. Group content
   // never reaches binding, retrieval, or answer generation.
-  if (ev.source?.type === 'group') {
+  if (ev.type === 'message' && ev.message && ev.source?.type === 'group') {
     const groupId = ev.source.groupId;
     if (!groupId) return;
     if (!env.VENUS_VISITS_GROUP_ID) {
@@ -68,6 +87,53 @@ export async function handleMaliLineEvent(
   if (!lineUserId) return;
 
   const respond = (text: string) => sendMaliLineText(lineUserId, ev.replyToken, text);
+  if (ev.type === 'postback') {
+    const agent = await prisma.agent.findUnique({
+      where: { lineUserId },
+      select: { id: true, role: true },
+    });
+    if (!agent) {
+      await respond(BIND_PROMPT);
+      return;
+    }
+    const selection = parseDepartmentPostback(ev.postback?.data ?? '');
+    if (!selection) {
+      const page = parseDepartmentPagePostback(ev.postback?.data ?? '');
+      if (!page) return;
+      const picker = await loadDepartmentPicker(page.questionId, agent.id);
+      if (!picker) {
+        await respond('ไม่สามารถเปิดรายการแผนกของคำถามนี้ได้ค่ะ');
+        return;
+      }
+      await sendMaliLineText(
+        lineUserId,
+        ev.replyToken,
+        'กรุณาเลือกแผนกค่ะ',
+        departmentQuickReplies(picker, page.offset),
+      );
+      return;
+    }
+    const assigned = await assignQuestionDepartment(
+      selection.questionId,
+      selection.departmentId,
+      agent.id,
+    );
+    if (!assigned.assigned) {
+      await respond('ไม่สามารถเลือกแผนกให้คำถามนี้ได้ค่ะ อาจมีผู้รับเรื่องไปแล้ว');
+      return;
+    }
+    let responseError: unknown;
+    try {
+      await respond(`ส่งต่อให้แผนก ${assigned.departmentName ?? ''} แล้วค่ะ`);
+    } catch (error) {
+      responseError = error;
+    }
+    await dispatchEscalation(selection.questionId);
+    if (responseError) throw responseError;
+    return;
+  }
+
+  if (ev.type !== 'message' || !ev.message) return;
   const text = ev.message.type === 'text' ? ev.message.text?.trim() ?? '' : '';
   const bind = text ? parseStaffBindCommand(text) : null;
   if (bind?.form === 'mali') {
@@ -94,13 +160,59 @@ export async function handleMaliLineEvent(
     return;
   }
 
+  const humanAnswer = parseLineHumanAnswer(text);
+  if (humanAnswer) {
+    try {
+      const question = await recordHumanAnswer({
+        questionId: humanAnswer.questionId,
+        answer: humanAnswer.answer,
+        actor: { id: agent.id, role: agent.role as Role },
+      });
+      let responseError: unknown;
+      try {
+        await respond('รับคำตอบแล้วค่ะ กำลังส่งกลับให้ผู้ถามและทำร่างบทความนะคะ');
+      } catch (error) {
+        responseError = error;
+      }
+      await completeHumanAnswer(question.id);
+      if (responseError) throw responseError;
+    } catch (error) {
+      if (error instanceof HumanAnswerError) {
+        await respond('ไม่สามารถรับคำตอบนี้ได้ค่ะ กรุณาตรวจรหัสคำถามและสิทธิ์ผู้ตอบ');
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+
   try {
     const result = await answerMaliQuestion({
       agent: { id: agent.id, role: agent.role as Role },
       questionText: text,
       channel: 'line',
     });
-    await respond(result.message);
+    let responseError: unknown;
+    try {
+      await sendMaliLineText(
+        lineUserId,
+        ev.replyToken,
+        result.message,
+        result.status === 'waiting' ? departmentQuickReplies({
+          questionId: result.questionId,
+          departmentId: null,
+          departmentName: null,
+          departmentChoices: result.departmentChoices,
+          routeReady: result.routeReady,
+        }) : undefined,
+      );
+    } catch (error) {
+      responseError = error;
+    }
+    if (result.status === 'waiting' && result.routeReady) {
+      await dispatchEscalation(result.questionId);
+    }
+    if (responseError) throw responseError;
   } catch (err) {
     log?.error({ err }, 'failed to answer Mali question');
   }

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   upsert: vi.fn(),
   findUnique: vi.fn(),
+  update: vi.fn(),
   deleteMany: vi.fn(),
   hashPassword: vi.fn(async (value: string) => `test-hash-for:${value}`),
   env: { AGENT_PINS: '', EMPLOYEE_PINS: '', STAFF_PINS: '' },
@@ -13,6 +14,7 @@ vi.mock('../src/db/prisma.js', () => ({
     agent: {
       findUnique: mocks.findUnique,
       upsert: mocks.upsert,
+      update: mocks.update,
       deleteMany: mocks.deleteMany,
     },
   },
@@ -42,6 +44,7 @@ beforeEach(() => {
   mocks.env.STAFF_PINS = '';
   mocks.findUnique.mockResolvedValue(null);
   mocks.upsert.mockResolvedValue({});
+  mocks.update.mockResolvedValue({});
   mocks.deleteMany.mockResolvedValue({ count: 0 });
 });
 
@@ -109,6 +112,64 @@ describe('syncStaff role seeding', () => {
       const staff = STAFF.find((e) => e.slug === slug);
       expect(staff?.apps).not.toContain('juno');
     }
+  });
+
+  it('declares Nadeer with her messenger apps and Way with Benz-equivalent Finance apps', () => {
+    const nadeer = STAFF.find((e) => e.slug === 'nadeer');
+    expect(nadeer).toMatchObject({
+      name: 'นาเดียร์',
+      apps: ['ceres', 'apollo'],
+      group: 'messengers',
+      gender: 'female',
+    });
+
+    const benz = STAFF.find((e) => e.slug === 'benz');
+    const way = STAFF.find((e) => e.slug === 'way');
+    expect(way).toEqual({
+      slug: 'way',
+      name: 'เวย์',
+      apps: ['minerva', 'juno', 'ceres', 'apollo'],
+      group: benz?.group,
+      gender: benz?.gender,
+    });
+  });
+
+  it('declares Apollo access for every staff member', () => {
+    expect(STAFF.every((staff) => staff.apps.includes('apollo'))).toBe(true);
+  });
+
+  it('idempotently resets only Nadeer to her declared grants by email', async () => {
+    let nadeerApps = ['minerva', 'ceres', 'apollo'];
+    mocks.findUnique.mockImplementation(async ({ where }: { where: { email: string } }) => (
+      where.email === 'nadeer@prominent.local'
+        ? { passwordHash: 'existing-hash', apps: nadeerApps }
+        : null
+    ));
+    mocks.update.mockImplementation(async ({ data }: { data: { apps: string[] } }) => {
+      nadeerApps = [...data.apps];
+      return {};
+    });
+
+    await syncStaff();
+    await syncStaff();
+
+    expect(mocks.update).toHaveBeenCalledOnce();
+    expect(mocks.update).toHaveBeenCalledWith({
+      where: { email: 'nadeer@prominent.local' },
+      data: { apps: ['ceres', 'apollo'] },
+    });
+  });
+
+  it('treats Nadeer exact grants in either order as already fixed', async () => {
+    mocks.findUnique.mockImplementation(async ({ where }: { where: { email: string } }) => (
+      where.email === 'nadeer@prominent.local'
+        ? { passwordHash: 'existing-hash', apps: ['apollo', 'ceres'] }
+        : null
+    ));
+
+    await syncStaff();
+
+    expect(mocks.update).not.toHaveBeenCalled();
   });
 
   it('STAFF_PINS (canonical) overrides a conflicting slug in EMPLOYEE_PINS and AGENT_PINS', async () => {

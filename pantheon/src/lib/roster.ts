@@ -79,7 +79,6 @@ export const ROLE_GROUPS: RoleGroup[] = [
     label: 'ฝ่ายขาย (Sales)',
     color: 'bg-emerald-600',
     members: [
-      { email: slugEmail('nadeer'), label: 'นาเดียร์', cred: 'pin', gender: 'female' },
       { email: slugEmail('anny'), label: 'แอนนี่', cred: 'pin', gender: 'female' },
       { email: slugEmail('noey'), label: 'เนย', cred: 'pin', gender: 'female' },
       { email: slugEmail('bow'), label: 'โบว์', cred: 'pin', gender: 'female' },
@@ -92,10 +91,11 @@ export const ROLE_GROUPS: RoleGroup[] = [
     label: 'การเงิน (Finance)',
     color: 'bg-rose-600',
     members: [
-      // Benz & Meow are the finance (Juno) staff. These cards must stay in step with the
+      // Benz, Way & Meow are the finance (Juno) staff. These cards must stay in step with the
       // seeded finance accounts in api/src/db/ensureSeeded.ts (provisioned via STAFF_PINS on
       // Railway) — edit both places when finance staff change.
       { email: slugEmail('benz'), label: 'เบนซ์', cred: 'pin', gender: 'female' },
+      { email: slugEmail('way'), label: 'เวย์', cred: 'pin', gender: 'female' },
       { email: slugEmail('meow'), label: 'เหมียว', cred: 'pin', gender: 'female' },
     ],
   },
@@ -104,6 +104,7 @@ export const ROLE_GROUPS: RoleGroup[] = [
     label: 'แมสเซนเจอร์ (Messenger)',
     color: 'bg-sky-600',
     members: [
+      { email: slugEmail('nadeer'), label: 'นาเดียร์', cred: 'pin', gender: 'female' },
       { email: slugEmail('ta'), label: 'ต้า', cred: 'pin', gender: 'male' },
       { email: slugEmail('arm'), label: 'อาร์ม', cred: 'pin', gender: 'male' },
       { email: slugEmail('man'), label: 'แมน', cred: 'pin', gender: 'male' },

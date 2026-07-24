@@ -42,7 +42,7 @@ type StaffSeed = {
 };
 
 export const STAFF: readonly StaffSeed[] = [
-  { slug: 'nadeer', name: 'นาเดียร์', apps: ['minerva', 'ceres', 'apollo'], group: 'sales', gender: 'female' },
+  { slug: 'nadeer', name: 'นาเดียร์', apps: ['ceres', 'apollo'], group: 'messengers', gender: 'female' },
   { slug: 'anny', name: 'แอนนี่', apps: ['minerva', 'ceres', 'apollo'], group: 'sales', gender: 'female' },
   { slug: 'noey', name: 'เนย', apps: ['minerva', 'ceres', 'apollo'], group: 'sales', gender: 'female' },
   { slug: 'bow', name: 'โบว์', apps: ['minerva', 'ceres', 'apollo'], group: 'sales', gender: 'female' },
@@ -68,6 +68,7 @@ export const STAFF: readonly StaffSeed[] = [
   // Finance team (การเงิน) — owner-granted Minerva + Juno + Ceres (2026-07-05). Juno's route
   // gate was widened from supervisor-only to requireApp('juno') so the juno grant admits them.
   { slug: 'benz', name: 'เบนซ์', apps: ['minerva', 'juno', 'ceres', 'apollo'], group: 'finance', gender: 'female' },
+  { slug: 'way', name: 'เวย์', apps: ['minerva', 'juno', 'ceres', 'apollo'], group: 'finance', gender: 'female' },
   { slug: 'meow', name: 'เหมียว', apps: ['minerva', 'juno', 'ceres', 'apollo'], group: 'finance', gender: 'female' },
 ];
 
@@ -187,8 +188,8 @@ export async function syncStaff(): Promise<void> {
     // STAFF is applied as a UNION with whatever is already on the row (ADDITIVE: a declared
     // grant is always present, but any extra grant added out-of-band survives). This lets an
     // owner-requested grant change (edit STAFF) actually propagate to existing rows, while
-    // never removing a grant on deploy — so no one is ever locked out. To REVOKE, remove the
-    // app from STAFF here (it stops being re-added) or pull the PIN to kill the login entirely.
+    // never removing a grant on deploy — so no one is ever locked out. A revocation therefore
+    // needs a targeted, durable-key fixup like Nadeer's immediately below this loop.
     const mergedApps = existing
       ? Array.from(new Set([...existing.apps, ...e.apps]))
       : [...e.apps];
@@ -202,6 +203,28 @@ export async function syncStaff(): Promise<void> {
       // eslint-disable-next-line no-console
       console.log(`[staff] applied declared app grants for "${e.slug}" → ${mergedApps.join(', ')}`);
     }
+  }
+
+  // Nadeer moved from Sales to general staff and now has Ceres + Apollo. STAFF app grants are
+  // union-additive, so changing her declaration cannot revoke grants already stored on the
+  // live Agent row. Heal exactly this one durable email-keyed row on every boot; compare as a
+  // set so storage order does not defeat idempotence, and leave every other Agent untouched.
+  const nadeerEmail = staffEmail('nadeer');
+  const nadeerApps = ['ceres', 'apollo'];
+  const nadeer = await prisma.agent.findUnique({
+    where: { email: nadeerEmail },
+    select: { apps: true },
+  });
+  const nadeerAppsMatch = nadeer
+    && nadeer.apps.length === nadeerApps.length
+    && nadeerApps.every((app) => nadeer.apps.includes(app));
+  if (nadeer && !nadeerAppsMatch) {
+    await prisma.agent.update({
+      where: { email: nadeerEmail },
+      data: { apps: nadeerApps },
+    });
+    // eslint-disable-next-line no-console
+    console.log('[staff] reset Nadeer app grants to Ceres + Apollo');
   }
 
   // Prune stale accounts only once EVERY canonical account (tier accounts + staff) is

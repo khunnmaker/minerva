@@ -12,13 +12,13 @@ vi.mock('../src/db/ensureSeeded.js', () => ({
     { email: 'nun@prominent.local', name: 'Noon', role: 'gm', group: 'gm', gender: 'female' },
   ],
   STAFF: [
-    { slug: 'sales', name: 'Sales', apps: ['ceres'], group: 'sales', gender: 'female' },
-    { slug: 'poopae', name: 'Poopae', apps: ['ceres'], role: 'central', group: 'central', gender: 'female' },
-    { slug: 'win', name: 'Win', apps: ['ceres'], role: 'central', group: 'central', gender: 'male' },
-    // Mail alone carries the juno grant (mirrors the 2026-07-21 owner directive) — win/poopae
-    // deliberately stay off ['ceres'] only, so buildLoginCards('juno') must show her card and
-    // not theirs.
-    { slug: 'mail', name: 'Mail', apps: ['ceres', 'juno'], role: 'central', group: 'central', gender: 'female' },
+    { slug: 'sales', name: 'Sales', apps: ['ceres', 'apollo'], group: 'sales', gender: 'female' },
+    { slug: 'nadeer', name: 'Nadeer', apps: ['ceres', 'apollo'], group: 'messengers', gender: 'female' },
+    { slug: 'poopae', name: 'Poopae', apps: ['ceres', 'apollo'], role: 'central', group: 'central', gender: 'female' },
+    { slug: 'win', name: 'Win', apps: ['ceres', 'apollo'], role: 'central', group: 'central', gender: 'male' },
+    // Mail carries the Central Office juno grant; win/poopae deliberately stay without Juno.
+    { slug: 'mail', name: 'Mail', apps: ['minerva', 'ceres', 'apollo', 'juno'], role: 'central', group: 'central', gender: 'female' },
+    { slug: 'way', name: 'Way', apps: ['minerva', 'juno', 'ceres', 'apollo'], group: 'finance', gender: 'female' },
   ],
   staffEmail: (slug: string) => `${slug}@prominent.local`,
 }));
@@ -27,6 +27,7 @@ vi.mock('../src/auth/jwt.js', () => ({
 }));
 
 import { buildLoginCards } from '../src/auth/loginCards.js';
+import { STAFF } from '../src/db/ensureSeeded.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -51,15 +52,33 @@ describe('buildLoginCards', () => {
       expect.objectContaining({ kind: 'password', group: 'gm', gender: 'female' }),
     ]);
     expect(cards.slice(6).every((card) => card.kind === 'pin')).toBe(true);
+    expect(cards).toEqual(expect.arrayContaining([
+      expect.objectContaining({ email: 'nadeer@prominent.local', group: 'messengers' }),
+      expect.objectContaining({ email: 'way@prominent.local', group: 'finance' }),
+    ]));
   });
 
-  it('shows a juno login card for Mail only, not win or poopae (2026-07-21 grant)', async () => {
+  it('shows juno login cards for Mail and Way, not win or poopae', async () => {
     const cards = await buildLoginCards('juno');
     const emails = cards.map((card) => card.email);
     expect(emails).toContain('mail@prominent.local');
+    expect(emails).toContain('way@prominent.local');
     expect(emails).not.toContain('win@prominent.local');
     expect(emails).not.toContain('poopae@prominent.local');
     // gm (Nee/Noon) keep their implicit GM_APPS juno access, unaffected by Mail's per-person grant.
     expect(emails).toEqual(expect.arrayContaining(['md@prominent.local', 'nun@prominent.local']));
+  });
+
+  it('removes Nadeer from Minerva cards while admitting Way', async () => {
+    const emails = (await buildLoginCards('minerva')).map((card) => card.email);
+    expect(emails).not.toContain('nadeer@prominent.local');
+    expect(emails).toContain('way@prominent.local');
+  });
+
+  it('shows Apollo cards for every declared staff member, including Nadeer and Way', async () => {
+    const emails = (await buildLoginCards('apollo')).map((card) => card.email);
+    for (const staff of STAFF) {
+      expect(emails).toContain(`${staff.slug}@prominent.local`);
+    }
   });
 });

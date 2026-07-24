@@ -11,7 +11,7 @@ const GM_EMAIL = 'md@prominent.local';
 const STAFF_SLUGS = [
   'nadeer', 'anny', 'noey', 'bow', 'tham', 'rak', 'ta', 'arm', 'man',
   'boonson', 'kaew', 'lungko', 'wong', 'paeng', 'poopae', 'win', 'mail',
-  'pin', 'lekmaeban', 'da', 'benz', 'meow',
+  'pin', 'lekmaeban', 'da', 'benz', 'way', 'meow',
 ];
 
 const steps = [];
